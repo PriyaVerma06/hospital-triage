@@ -1,7 +1,7 @@
 """
 Test suite for WebSocket live updates and clinical alert service in backend/realtime.py and backend/alerts.py.
 Verifies real-time event broadcasting, provider-targeted alerts, re-prioritization notifications,
-acknowledgement endpoints, and alert filtering.
+acknowledgement endpoints, and alert filtering with RBAC authentication.
 """
 
 from pathlib import Path
@@ -17,6 +17,8 @@ BACKEND_DIR = Path(__file__).resolve().parent.parent
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
+from auth import create_access_token
+from tests.conftest import seed_test_users
 from database import Base, get_db
 from main import app
 from models import (
@@ -28,6 +30,8 @@ from models import (
     DoctorSpecialty,
     Patient,
     PatientStatus,
+    User,
+    UserRole,
 )
 from realtime import manager
 
@@ -42,7 +46,7 @@ TestingSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=test_
 
 @pytest.fixture(autouse=True)
 def setup_realtime_db():
-    """Create fresh schema, seed standard resources, and clear connections for each test."""
+    """Create fresh schema, seed standard resources & users, and clear connections for each test."""
     Base.metadata.create_all(bind=test_engine)
     manager.connections.clear()
 
@@ -67,13 +71,16 @@ def setup_realtime_db():
         db.add(Bed(id=f"GEN-0{i}", ward=BedWard.GENERAL, has_ventilator=False, status=BedStatus.AVAILABLE))
 
     # 5 on-duty doctors
-    doc1 = Doctor(name="Dr. Sarah Chen", specialty=DoctorSpecialty.EMERGENCY, is_available=True, active_patients_count=0)
-    doc2 = Doctor(name="Dr. Marcus Vance", specialty=DoctorSpecialty.EMERGENCY, is_available=True, active_patients_count=0)
-    doc3 = Doctor(name="Dr. Elena Rostova", specialty=DoctorSpecialty.CARDIOLOGY, is_available=True, active_patients_count=0)
-    doc4 = Doctor(name="Dr. James Wilson", specialty=DoctorSpecialty.GENERAL, is_available=True, active_patients_count=0)
-    doc5 = Doctor(name="Dr. Priya Patel", specialty=DoctorSpecialty.GENERAL, is_available=True, active_patients_count=0)
+    doc1 = Doctor(id=1, name="Dr. Sarah Chen", specialty=DoctorSpecialty.EMERGENCY, is_available=True, active_patients_count=0)
+    doc2 = Doctor(id=2, name="Dr. Marcus Vance", specialty=DoctorSpecialty.EMERGENCY, is_available=True, active_patients_count=0)
+    doc3 = Doctor(id=3, name="Dr. Elena Rostova", specialty=DoctorSpecialty.CARDIOLOGY, is_available=True, active_patients_count=0)
+    doc4 = Doctor(id=4, name="Dr. James Wilson", specialty=DoctorSpecialty.GENERAL, is_available=True, active_patients_count=0)
+    doc5 = Doctor(id=5, name="Dr. Priya Patel", specialty=DoctorSpecialty.GENERAL, is_available=True, active_patients_count=0)
     db.add_all([doc1, doc2, doc3, doc4, doc5])
     db.commit()
+
+    # Seed test users
+    seed_test_users(db)
     db.close()
 
     yield
@@ -86,17 +93,19 @@ def setup_realtime_db():
 client = TestClient(app)
 
 
-def test_websocket_ping_pong():
-    """Verify WebSocket connection accepts connection and responds to ping with pong."""
-    with client.websocket_connect("/ws?role=nurse") as ws:
+def test_websocket_ping_pong(nurse_headers):
+    """Verify WebSocket connection accepts connection with valid JWT token and responds to ping with pong."""
+    token = nurse_headers["Authorization"].split()[1]
+    with client.websocket_connect(f"/ws?token={token}") as ws:
         ws.send_text("ping")
         response = ws.receive_text()
         assert response == "pong"
 
 
-def test_websocket_broadcast_on_patient_creation():
+def test_websocket_broadcast_on_patient_creation(nurse_headers):
     """Verify connected WebSocket receives broadcast events when a new patient is created."""
-    with client.websocket_connect("/ws?role=nurse") as ws:
+    token = nurse_headers["Authorization"].split()[1]
+    with client.websocket_connect(f"/ws?token={token}") as ws:
         payload = {
             "name": "Live Broadcast Test",
             "age": 45,
@@ -109,12 +118,11 @@ def test_websocket_broadcast_on_patient_creation():
             "temp": 37.8,
             "rr": 16,
         }
-        resp = client.post("/patients", json=payload)
+        resp = client.post("/patients", json=payload, headers=nurse_headers)
         assert resp.status_code == 201
 
         # The client should receive real-time events (patient_created, queue_changed, etc.)
         events = []
-        # Receive any queued events
         for _ in range(2):
             event = ws.receive_json()
             events.append(event)
@@ -123,15 +131,16 @@ def test_websocket_broadcast_on_patient_creation():
         assert "patient_created" in event_types or "queue_changed" in event_types
 
 
-def test_doctor_targeted_alert():
+def test_doctor_targeted_alert(doctor_headers, nurse_headers):
     """
     Verify assigned doctor receives clinical alert for Level 1/2 patient,
     while another unassigned doctor does not receive it.
     """
-    # Doctor 3 is Elena Rostova (Cardiology), Doctor 4 is James Wilson (General)
-    # A patient with chest pain and critical vitals will be assigned to Dr. Rostova
-    with client.websocket_connect("/ws?role=doctor&doctor_id=3") as ws_cardiology, \
-         client.websocket_connect("/ws?role=doctor&doctor_id=4") as ws_general:
+    doc3_token = doctor_headers(3)["Authorization"].split()[1]
+    doc4_token = doctor_headers(4)["Authorization"].split()[1]
+
+    with client.websocket_connect(f"/ws?token={doc3_token}") as ws_cardiology, \
+         client.websocket_connect(f"/ws?token={doc4_token}") as ws_general:
 
         payload = {
             "name": "Arthur Cardiac",
@@ -145,7 +154,7 @@ def test_doctor_targeted_alert():
             "temp": 37.0,
             "rr": 26,
         }
-        resp = client.post("/patients", json=payload)
+        resp = client.post("/patients", json=payload, headers=nurse_headers)
         assert resp.status_code == 201
         data = resp.json()
         assert data["assigned_doctor_id"] == 3
@@ -164,7 +173,7 @@ def test_doctor_targeted_alert():
         assert "Arthur Cardiac" in received_alert["message"]
 
 
-def test_reprioritization_alert():
+def test_reprioritization_alert(nurse_headers):
     """Verify worsening vitals that elevate urgency trigger an alert and Alert record in DB."""
     # 1. Admit patient with Level 3 vitals
     payload = {
@@ -179,7 +188,7 @@ def test_reprioritization_alert():
         "temp": 37.4,
         "rr": 18,
     }
-    resp = client.post("/patients", json=payload)
+    resp = client.post("/patients", json=payload, headers=nurse_headers)
     assert resp.status_code == 201
     patient_id = resp.json()["id"]
     initial_urgency = resp.json()["urgency_level"]
@@ -194,7 +203,7 @@ def test_reprioritization_alert():
         "temp": 38.5,
         "rr": 32,
     }
-    update_resp = client.put(f"/patients/{patient_id}/vitals", json=vitals_update)
+    update_resp = client.put(f"/patients/{patient_id}/vitals", json=vitals_update, headers=nurse_headers)
     assert update_resp.status_code == 200
     assert update_resp.json()["level_changed"] is True
     assert update_resp.json()["urgency_level"] == 1
@@ -211,7 +220,7 @@ def test_reprioritization_alert():
     assert reprioritized_alert.acknowledged is False
 
 
-def test_alert_acknowledgement():
+def test_alert_acknowledgement(nurse_headers):
     """Verify PUT /alerts/{id}/acknowledge marks alert as acknowledged."""
     # Create an alert directly in DB
     db = TestingSessionLocal()
@@ -247,7 +256,7 @@ def test_alert_acknowledgement():
     db.close()
 
     # Acknowledge the alert via API
-    resp = client.put(f"/alerts/{alert_id}/acknowledge")
+    resp = client.put(f"/alerts/{alert_id}/acknowledge", headers=nurse_headers)
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == alert_id
@@ -260,11 +269,11 @@ def test_alert_acknowledgement():
     assert updated_alert.acknowledged is True
 
     # Non-existent alert returns 404
-    resp_404 = client.put("/alerts/99999/acknowledge")
+    resp_404 = client.put("/alerts/99999/acknowledge", headers=nurse_headers)
     assert resp_404.status_code == 404
 
 
-def test_level_4_creates_no_alert():
+def test_level_4_creates_no_alert(nurse_headers):
     """Verify Level 4 or 5 patient intake does NOT generate any Alert rows."""
     payload = {
         "name": "Mild Condition",
@@ -278,7 +287,7 @@ def test_level_4_creates_no_alert():
         "temp": 36.6,
         "rr": 14,
     }
-    resp = client.post("/patients", json=payload)
+    resp = client.post("/patients", json=payload, headers=nurse_headers)
     assert resp.status_code == 201
     patient_id = resp.json()["id"]
     assert resp.json()["urgency_level"] >= 4
@@ -289,7 +298,7 @@ def test_level_4_creates_no_alert():
     assert len(alerts) == 0
 
 
-def test_level_1_waitlisted_alert():
+def test_level_1_waitlisted_alert(nurse_headers):
     """Verify waitlisted Level 1 patient (no beds available) generates a NO BED alert."""
     db = TestingSessionLocal()
     # Mark all ICU and ER beds OCCUPIED
@@ -309,7 +318,7 @@ def test_level_1_waitlisted_alert():
         "temp": 37.0,
         "rr": 36,
     }
-    resp = client.post("/patients", json=payload)
+    resp = client.post("/patients", json=payload, headers=nurse_headers)
     assert resp.status_code == 201
     patient_data = resp.json()
     assert patient_data["status"] == "WAITING"
@@ -327,7 +336,7 @@ def test_level_1_waitlisted_alert():
     assert no_bed_alert.doctor_id is None
 
 
-def test_get_alerts_filtering():
+def test_get_alerts_filtering(nurse_headers):
     """Verify GET /alerts endpoint supports filtering by doctor_id and unacknowledged_only."""
     db = TestingSessionLocal()
     patient = Patient(
@@ -359,18 +368,18 @@ def test_get_alerts_filtering():
     db.close()
 
     # Query all
-    resp_all = client.get("/alerts")
+    resp_all = client.get("/alerts", headers=nurse_headers)
     assert resp_all.status_code == 200
     assert len(resp_all.json()) >= 3
 
     # Query doctor 1 only
-    resp_doc1 = client.get("/alerts?doctor_id=1")
+    resp_doc1 = client.get("/alerts?doctor_id=1", headers=nurse_headers)
     assert resp_doc1.status_code == 200
     assert len(resp_doc1.json()) == 2
     assert all(a["doctor_id"] == 1 for a in resp_doc1.json())
 
     # Query doctor 1 unacknowledged only
-    resp_doc1_unack = client.get("/alerts?doctor_id=1&unacknowledged_only=true")
+    resp_doc1_unack = client.get("/alerts?doctor_id=1&unacknowledged_only=true", headers=nurse_headers)
     assert resp_doc1_unack.status_code == 200
     assert len(resp_doc1_unack.json()) == 1
     assert resp_doc1_unack.json()[0]["message"] == "Alert Doc 1 Unack"

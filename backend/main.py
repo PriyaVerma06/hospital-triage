@@ -1,7 +1,36 @@
 """
 FastAPI application for the hospital emergency triage system.
 Provides RESTful APIs and WebSocket live updates for patient intake, triage execution,
-resource allocation, queue management, clinical alerts, and audit trail recording.
+resource allocation, queue management, clinical alerts, user auth, and audit trail recording.
+
+==========================================================================================
+ROLE-BASED ACCESS CONTROL (RBAC) PERMISSION MATRIX
+==========================================================================================
+Route                                 Public   NURSE   DOCTOR   ADMIN   Notes
+------------------------------------------------------------------------------------------
+GET  /health                            ✓        ✓       ✓        ✓     Health check
+POST /auth/login                        ✓        ✓       ✓        ✓     OAuth2 form login
+GET  /auth/me                                    ✓       ✓        ✓     Authenticated user info
+POST /users                                                       ✓     Create user (Admin only)
+GET  /users                                                       ✓     List users (Admin only)
+PUT  /users/{id}/active                                           ✓     Activate/deactivate user
+POST /patients                                   ✓                ✓     Patient intake
+GET  /patients                                   ✓       ✓        ✓     List patients
+GET  /patients/{id}                              ✓       ✓        ✓     Patient details
+PUT  /patients/{id}/vitals                       ✓       ✓        ✓     Update vitals
+PUT  /patients/{id}/discharge                    ✓       ✓        ✓     Discharge patient
+GET  /patients/{id}/audit                        ✓       ✓        ✓     Patient audit history
+GET  /queue                                      ✓       ✓        ✓     Waiting queue
+GET  /beds                                       ✓       ✓        ✓     List beds
+PUT  /beds/{id}/status                                            ✓     Update bed status
+GET  /doctors                                    ✓       ✓        ✓     List doctors
+PUT  /doctors/{id}/availability                                   ✓     Toggle doctor availability
+GET  /resources/summary                          ✓       ✓        ✓     Hospital resource summary
+POST /allocate/run                                                ✓     Manual allocation trigger
+GET  /alerts                                     ✓       ✓*       ✓     *DOCTOR forced to own alerts
+PUT  /alerts/{id}/acknowledge                    ✓       ✓*       ✓     *DOCTOR can only ack own alerts
+WS   /ws?token=<jwt>                             ✓       ✓        ✓     Authenticated live updates
+==========================================================================================
 """
 
 import asyncio
@@ -11,6 +40,7 @@ from typing import List, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 
 from alerts import (
@@ -24,8 +54,27 @@ from allocation import (
     release_patient_resources,
     try_upgrade_bed,
 )
+from auth import (
+    create_access_token,
+    decode_token_for_ws,
+    get_current_user,
+    hash_password,
+    require_roles,
+    verify_password,
+)
 from database import Base, engine, get_db
-from models import Alert, AuditLog, Bed, BedStatus, BedWard, Doctor, Patient, PatientStatus
+from models import (
+    Alert,
+    AuditLog,
+    Bed,
+    BedStatus,
+    BedWard,
+    Doctor,
+    Patient,
+    PatientStatus,
+    User,
+    UserRole,
+)
 from realtime import manager, publish, set_event_loop
 from schemas import (
     AlertOut,
@@ -36,11 +85,15 @@ from schemas import (
     BedStatusUpdate,
     DoctorAvailabilityUpdate,
     DoctorOut,
+    LoginResponse,
     PatientCreate,
     PatientCreateResponse,
     PatientOut,
     QueuePatientOut,
     ResourcesSummary,
+    UserActiveUpdate,
+    UserCreate,
+    UserOut,
     VitalsUpdate,
     VitalsUpdateResponse,
     WardBedCounts,
@@ -58,7 +111,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Hospital Triage System API",
-    description="Emergency department patient triage, vital tracking, and resource allocation API.",
+    description="Emergency department patient triage, vital tracking, resource allocation, and RBAC auth API.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -87,15 +140,27 @@ def _get_triage_color(urgency_level: Optional[int]) -> str:
 @app.websocket("/ws")
 async def websocket_endpoint(
     websocket: WebSocket,
-    role: Optional[str] = Query(None, description="Client role, e.g. nurse, admin, doctor"),
-    doctor_id: Optional[int] = Query(None, description="Doctor ID for provider-specific alerts"),
+    token: Optional[str] = Query(None, description="JWT Bearer access token"),
 ):
     """
-    WebSocket endpoint for real-time dashboard events and doctor-targeted alerts.
-    Keeps connection alive, responds to 'ping' with 'pong', and unregisters on disconnect.
+    WebSocket endpoint for authenticated real-time dashboard events and doctor-targeted alerts.
+    Requires ?token=<jwt>. Decodes token and closes connection with code 4401 if invalid.
     """
+    if not token:
+        await websocket.close(code=4401)
+        return
+
+    user_info = decode_token_for_ws(token)
+    if not user_info:
+        await websocket.close(code=4401)
+        return
+
     set_event_loop(asyncio.get_running_loop())
-    await manager.connect(websocket, role=role, doctor_id=doctor_id)
+    await manager.connect(
+        websocket,
+        role=user_info["role"],
+        doctor_id=user_info.get("doctor_id"),
+    )
     try:
         while True:
             text = await websocket.receive_text()
@@ -111,8 +176,149 @@ async def websocket_endpoint(
 
 @app.get("/health", tags=["System"])
 def health_check():
-    """Health check endpoint to verify service availability."""
+    """Health check endpoint to verify service availability (Public)."""
     return {"status": "ok"}
+
+
+# --- Authentication & User Management ---
+
+@app.post(
+    "/auth/login",
+    response_model=LoginResponse,
+    tags=["Authentication"],
+)
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(get_db),
+):
+    """
+    OAuth2 username/password login endpoint (Public).
+    Returns access token, token type, and authenticated user details.
+    """
+    user = db.query(User).filter(User.username == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Incorrect username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is inactive",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    access_token = create_access_token(user)
+    return LoginResponse(
+        access_token=access_token,
+        token_type="bearer",
+        user=UserOut.model_validate(user),
+    )
+
+
+@app.get(
+    "/auth/me",
+    response_model=UserOut,
+    tags=["Authentication"],
+)
+def get_current_user_profile(
+    current_user: User = Depends(get_current_user),
+):
+    """Retrieve profile of the currently authenticated user."""
+    return current_user
+
+
+@app.post(
+    "/users",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+    tags=["User Management"],
+)
+def create_user(
+    user_in: UserCreate,
+    current_user: User = Depends(require_roles(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Create a new user account (Admin only). Never exposes password hash."""
+    # Check username uniqueness
+    existing_user = db.query(User).filter(User.username == user_in.username).first()
+    if existing_user:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Username '{user_in.username}' already registered",
+        )
+
+    # Validate DOCTOR role doctor_id linkage
+    if user_in.role == UserRole.DOCTOR:
+        if not user_in.doctor_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="doctor_id is required for DOCTOR role",
+            )
+        doctor = db.query(Doctor).filter(Doctor.id == user_in.doctor_id).first()
+        if not doctor:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Doctor with ID {user_in.doctor_id} not found",
+            )
+    else:
+        if user_in.doctor_id is not None:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="doctor_id should only be specified for DOCTOR role",
+            )
+
+    new_user = User(
+        username=user_in.username,
+        password_hash=hash_password(user_in.password),
+        full_name=user_in.full_name,
+        role=user_in.role,
+        doctor_id=user_in.doctor_id,
+        is_active=True,
+    )
+    db.add(new_user)
+    db.commit()
+    db.refresh(new_user)
+    return new_user
+
+
+@app.get(
+    "/users",
+    response_model=List[UserOut],
+    tags=["User Management"],
+)
+def list_users(
+    current_user: User = Depends(require_roles(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """List all registered system users (Admin only)."""
+    return db.query(User).order_by(User.id.asc()).all()
+
+
+@app.put(
+    "/users/{user_id}/active",
+    response_model=UserOut,
+    tags=["User Management"],
+)
+def update_user_active_status(
+    user_id: int,
+    active_in: UserActiveUpdate,
+    current_user: User = Depends(require_roles(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Activate or deactivate a user account (Admin only)."""
+    user = db.query(User).filter(User.id == user_id).first()
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"User with ID {user_id} not found",
+        )
+
+    user.is_active = active_in.is_active
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 # --- Patient Intake & Management ---
@@ -125,10 +331,11 @@ def health_check():
 )
 def create_patient(
     patient_in: PatientCreate,
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """
-    Intake a new emergency patient: validates inputs, evaluates triage with ML model,
+    Intake a new emergency patient (NURSE, ADMIN): validates inputs, evaluates triage with ML model,
     records initial triage in AuditLog, attempts resource allocation, dispatches alerts,
     and broadcasts real-time events.
     """
@@ -199,6 +406,7 @@ def create_patient(
 )
 def list_patients(
     status: Optional[PatientStatus] = Query(None, description="Filter patients by status"),
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """
@@ -219,6 +427,7 @@ def list_patients(
 )
 def get_patient(
     patient_id: int,
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """Retrieve details of a single patient by ID."""
@@ -239,6 +448,7 @@ def get_patient(
 def update_patient_vitals(
     patient_id: int,
     vitals_in: VitalsUpdate,
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """
@@ -285,11 +495,9 @@ def update_patient_vitals(
     # Resource allocation re-evaluation
     alloc_result = None
     if patient.status == PatientStatus.WAITING:
-        # Patient was waitlisted, attempt allocation with updated vitals/acuity
         alloc_result = assign_patient(db, patient)
         check_and_alert_assignment(db, patient)
     elif patient.status == PatientStatus.ASSIGNED and level_changed and new_urgency < previous_level:
-        # Patient acuity worsened (e.g. 4 -> 1): attempt bed upgrade
         alloc_result = try_upgrade_bed(db, patient)
 
     # Broadcast real-time events
@@ -298,6 +506,7 @@ def update_patient_vitals(
         "patient_id": patient.id,
         "urgency_level": patient.urgency_level,
         "level_changed": level_changed,
+        "previous_level": previous_level,
     })
     publish({"type": "queue_changed"})
     publish({"type": "resources_changed"})
@@ -320,11 +529,13 @@ def update_patient_vitals(
 )
 def discharge_patient(
     patient_id: int,
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """
     Discharge a patient: marks status as DISCHARGED, releases allocated bed (set to CLEANING)
     and doctor load, then triggers allocation and alerts for remaining waiting patients.
+    Allowed: NURSE, DOCTOR, ADMIN.
     """
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
@@ -366,6 +577,7 @@ def discharge_patient(
 )
 def get_patient_audit_log(
     patient_id: int,
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """Retrieve audit history for a single patient, newest entries first."""
@@ -391,7 +603,10 @@ def get_patient_audit_log(
     response_model=List[QueuePatientOut],
     tags=["Queue"],
 )
-def get_triage_queue(db: Session = Depends(get_db)):
+def get_triage_queue(
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
     """
     Retrieve all WAITING patients in priority triage order (urgency 1 first, then wait time).
     Enriched with UI triage category color and wait time in minutes.
@@ -430,12 +645,22 @@ def get_triage_queue(db: Session = Depends(get_db)):
 def list_alerts(
     doctor_id: Optional[int] = Query(None, description="Filter alerts by doctor ID"),
     unacknowledged_only: bool = Query(False, description="Filter only unacknowledged alerts"),
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
-    """Retrieve hospital emergency alerts, newest entries first."""
+    """
+    Retrieve hospital emergency alerts, newest entries first.
+    DOCTOR role is restricted to seeing only their own alerts.
+    """
     query = db.query(Alert)
-    if doctor_id is not None:
-        query = query.filter(Alert.doctor_id == doctor_id)
+
+    # Enforce role-based scoping for doctors
+    if current_user.role == UserRole.DOCTOR:
+        query = query.filter(Alert.doctor_id == current_user.doctor_id)
+    else:
+        if doctor_id is not None:
+            query = query.filter(Alert.doctor_id == doctor_id)
+
     if unacknowledged_only:
         query = query.filter(Alert.acknowledged == False)
 
@@ -449,15 +674,28 @@ def list_alerts(
 )
 def acknowledge_alert(
     alert_id: int,
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
-    """Acknowledge a clinical alert."""
+    """
+    Acknowledge a clinical alert.
+    NURSE and ADMIN can acknowledge any alert.
+    DOCTOR can only acknowledge alerts assigned to their doctor_id (403 otherwise).
+    """
     alert = db.query(Alert).filter(Alert.id == alert_id).first()
     if not alert:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Alert with ID {alert_id} not found",
         )
+
+    # Restrict doctor role to their own alerts
+    if current_user.role == UserRole.DOCTOR:
+        if alert.doctor_id != current_user.doctor_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Doctors are only permitted to acknowledge alerts assigned to themselves",
+            )
 
     alert.acknowledged = True
     db.commit()
@@ -472,7 +710,10 @@ def acknowledge_alert(
     response_model=List[BedOut],
     tags=["Resources"],
 )
-def list_beds(db: Session = Depends(get_db)):
+def list_beds(
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
     """Retrieve list of hospital beds and current statuses."""
     return db.query(Bed).order_by(Bed.id.asc()).all()
 
@@ -485,10 +726,11 @@ def list_beds(db: Session = Depends(get_db)):
 def update_bed_status(
     bed_id: str,
     status_in: BedStatusUpdate,
+    current_user: User = Depends(require_roles(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """
-    Update bed status (AVAILABLE, OCCUPIED, CLEANING).
+    Update bed status (AVAILABLE, OCCUPIED, CLEANING) (Admin only).
     When set back to AVAILABLE, automatically allocates waiting patients.
     """
     bed = db.query(Bed).filter(Bed.id == bed_id).first()
@@ -522,7 +764,10 @@ def update_bed_status(
     response_model=List[DoctorOut],
     tags=["Resources"],
 )
-def list_doctors(db: Session = Depends(get_db)):
+def list_doctors(
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
     """Retrieve list of hospital doctors and availability statuses."""
     return db.query(Doctor).order_by(Doctor.id.asc()).all()
 
@@ -535,10 +780,11 @@ def list_doctors(db: Session = Depends(get_db)):
 def update_doctor_availability(
     doctor_id: int,
     avail_in: DoctorAvailabilityUpdate,
+    current_user: User = Depends(require_roles(UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """
-    Update doctor availability.
+    Update doctor availability (Admin only).
     When set back to True, automatically allocates waiting patients.
     """
     doctor = db.query(Doctor).filter(Doctor.id == doctor_id).first()
@@ -571,7 +817,10 @@ def update_doctor_availability(
     response_model=ResourcesSummary,
     tags=["Resources"],
 )
-def get_resources_summary(db: Session = Depends(get_db)):
+def get_resources_summary(
+    current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
     """
     Retrieve live summary of hospital resources: available/occupied/cleaning beds per ward,
     free ventilators, available doctors with capacity, and count of waiting patients.
@@ -619,8 +868,11 @@ def get_resources_summary(db: Session = Depends(get_db)):
     response_model=AllocateRunResponse,
     tags=["Allocation"],
 )
-def run_manual_allocation(db: Session = Depends(get_db)):
-    """Manually execute waiting queue allocation algorithm and return assigned patient IDs."""
+def run_manual_allocation(
+    current_user: User = Depends(require_roles(UserRole.ADMIN)),
+    db: Session = Depends(get_db),
+):
+    """Manually execute waiting queue allocation algorithm (Admin only) and return assigned patient IDs."""
     assigned_ids = allocate_waiting(db)
     for p_id in assigned_ids:
         p_obj = db.query(Patient).filter(Patient.id == p_id).first()

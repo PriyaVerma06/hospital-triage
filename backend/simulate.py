@@ -25,12 +25,12 @@ LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Mille
 
 
 def reset_database():
-    """Reset database state directly: clears patients, audit logs, and resets beds/doctors."""
+    """Reset database state directly: clears patients, audit logs, and resets beds/doctors. (Preserves users)."""
     print("=" * 60)
-    print("Resetting database to clean initial state...")
+    print("Resetting database to clean initial state (preserving users)...")
     db = SessionLocal()
     try:
-        # 1. Delete all alerts, audit logs, and patient records
+        # 1. Delete all alerts, audit logs, and patient records (do NOT delete User records)
         db.query(Alert).delete()
         db.query(AuditLog).delete()
         db.query(Patient).delete()
@@ -140,6 +140,19 @@ def run_simulation(num_patients: int = 25, api_url: str = "http://127.0.0.1:8000
         except Exception as e:
             print(f"Error connecting to API at {api_url}: {e}")
             print("Please ensure the FastAPI server is running with: uvicorn main:app --reload")
+            sys.exit(1)
+
+        # Authenticate as nurse1 to obtain Bearer token for protected endpoints
+        try:
+            login_resp = client.post("/auth/login", data={"username": "nurse1", "password": "demo123"})
+            if login_resp.status_code != 200:
+                print(f"Error logging in as nurse1: {login_resp.status_code} - {login_resp.text}")
+                sys.exit(1)
+            token = login_resp.json()["access_token"]
+            client.headers["Authorization"] = f"Bearer {token}"
+            print("✓ Authenticated as 'nurse1' with Bearer token.")
+        except Exception as e:
+            print(f"Authentication error connecting to {api_url}: {e}")
             sys.exit(1)
 
         # Ingest patients sequentially

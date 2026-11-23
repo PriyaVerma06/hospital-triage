@@ -1,6 +1,6 @@
-# Hospital Triage Backend API & Real-Time Alert Engine
+# Hospital Triage Backend API & Real-Time Engine
 
-FastAPI core service powering the hospital emergency triage system. Provides clinical intake validation, ML-driven triage evaluation, deterministic resource allocation (beds and physicians), priority queue management, vital re-prioritization, clinical alert service, real-time WebSocket live updates, and comprehensive audit logging.
+FastAPI core service powering the hospital emergency triage system. Provides clinical intake validation, ML-driven triage evaluation, deterministic resource allocation (beds and physicians), priority queue management, vital re-prioritization, clinical alert service, authenticated real-time WebSocket live updates, Role-Based Access Control (RBAC), and comprehensive audit logging.
 
 ---
 
@@ -17,9 +17,65 @@ cd backend
 - **Interactive OpenAPI (Swagger) Docs**: `http://127.0.0.1:8000/docs`
 - **ReDoc Documentation**: `http://127.0.0.1:8000/redoc`
 
+### Interactive Documentation & OAuth2 Login
+In Swagger UI (`/docs`), click the green **Authorize** button in the top right to log in with any seeded account (e.g. `nurse1` / `demo123`). All authenticated requests executed in Swagger will automatically include the `Authorization: Bearer <token>` header.
+
 ---
 
-## 2. Resource Allocation Rules
+## 2. Authentication & Role-Based Access Control (RBAC)
+
+The system enforces authentication via standard OAuth2 Bearer tokens (`PyJWT`, `HS256`) and passwords securely hashed with `bcrypt`.
+
+### Environment Configuration
+- **`TRIAGE_SECRET_KEY`**: Secret key used to sign and verify JWT tokens.
+  - *Default in development*: `"dev-secret-key-hospital-triage-change-in-production-only-very-secure"`
+  - *Production*: Set `export TRIAGE_SECRET_KEY="<strong-random-secret>"` in your environment.
+- **Token Lifetime**: 8 hours.
+
+### Seeded Demo Accounts (Password: `demo123`)
+| Username | Role | Display Name | Associated Provider |
+|---|---|---|---|
+| `admin` | `ADMIN` | System Administrator | None |
+| `nurse1` | `NURSE` | Nurse Sarah Jenkins | None |
+| `nurse2` | `NURSE` | Nurse David Kim | None |
+| `dr1` | `DOCTOR` | Dr. Sarah Chen | Doctor #1 (Emergency) |
+| `dr2` | `DOCTOR` | Dr. Marcus Vance | Doctor #2 (Emergency) |
+| `dr3` | `DOCTOR` | Dr. Elena Rostova | Doctor #3 (Cardiology) |
+| `dr4` | `DOCTOR` | Dr. James Wilson | Doctor #4 (General) |
+| `dr5` | `DOCTOR` | Dr. Priya Patel | Doctor #5 (General) |
+
+---
+
+## 3. RBAC Permission Matrix
+
+| Method | Endpoint | Public | NURSE | DOCTOR | ADMIN | Permission Details & Scoping |
+|---|---|:---:|:---:|:---:|:---:|---|
+| `GET` | `/health` | ✓ | ✓ | ✓ | ✓ | Public system health check |
+| `POST` | `/auth/login` | ✓ | ✓ | ✓ | ✓ | Public OAuth2 login (returns Bearer JWT) |
+| `GET` | `/auth/me` | | ✓ | ✓ | ✓ | Profile of currently authenticated user |
+| `POST` | `/users` | | | | ✓ | Create new user account (Admin only) |
+| `GET` | `/users` | | | | ✓ | List all system accounts (Admin only) |
+| `PUT` | `/users/{id}/active` | | | | ✓ | Activate or deactivate user (Admin only) |
+| `POST` | `/patients` | | ✓ | | ✓ | Emergency intake & triage evaluation |
+| `GET` | `/patients` | | ✓ | ✓ | ✓ | View triage patient listing |
+| `GET` | `/patients/{id}` | | ✓ | ✓ | ✓ | View single patient clinical details |
+| `PUT` | `/patients/{id}/vitals` | | ✓ | ✓ | ✓ | Update vitals & trigger re-prioritization |
+| `PUT` | `/patients/{id}/discharge` | | ✓ | ✓ | ✓ | Discharge patient and free resources |
+| `GET` | `/patients/{id}/audit` | | ✓ | ✓ | ✓ | View patient audit trail |
+| `GET` | `/queue` | | ✓ | ✓ | ✓ | View waiting queue with color & wait time |
+| `GET` | `/beds` | | ✓ | ✓ | ✓ | View hospital bed inventory & status |
+| `PUT` | `/beds/{id}/status` | | | | ✓ | Update bed status (Admin only) |
+| `GET` | `/doctors` | | ✓ | ✓ | ✓ | View on-duty physician rosters |
+| `PUT` | `/doctors/{id}/availability`| | | | ✓ | Toggle physician availability (Admin only) |
+| `GET` | `/resources/summary` | | ✓ | ✓ | ✓ | Real-time bed, ventilator, & doctor summary |
+| `POST` | `/allocate/run` | | | | ✓ | Trigger manual waiting queue allocation |
+| `GET` | `/alerts` | | ✓ | ✓* | ✓ | List alerts. *DOCTOR sees only their own |
+| `PUT` | `/alerts/{id}/acknowledge` | | ✓ | ✓* | ✓ | Acknowledge alert. *DOCTOR can only ack own |
+| `WS` | `/ws?token=<jwt>` | | ✓ | ✓ | ✓ | Authenticated live updates & doctor alerts |
+
+---
+
+## 4. Resource Allocation Rules
 
 The resource matching engine (`backend/allocation.py`) matches admitted patients to hospital beds and available physicians:
 
@@ -45,20 +101,18 @@ The resource matching engine (`backend/allocation.py`) matches admitted patients
 
 ---
 
-## 3. Real-Time WebSockets & Clinical Alert Service
+## 5. Authenticated WebSockets & Clinical Alerts
 
-The live updates and notification system (`backend/realtime.py` & `backend/alerts.py`) broadcasts real-time telemetry to hospital staff dashboards and sends targeted critical alerts to physicians.
+Live updates and provider alerts are streamed over an authenticated WebSocket connection.
 
 ### WebSocket Endpoint: `/ws`
 Connect via WebSocket client:
 ```text
-ws://127.0.0.1:8000/ws?role=<role>&doctor_id=<doctor_id>
+ws://127.0.0.1:8000/ws?token=<jwt>
 ```
-- **Query Parameters**:
-  - `role` *(optional)*: Client role (e.g. `nurse`, `admin`, `doctor`).
-  - `doctor_id` *(optional)*: Integer ID of physician to receive doctor-specific clinical alerts.
-- **Keepalive Protocol**: Clients send `"ping"`, server immediately responds `"pong"`. Dead connections are pruned automatically.
-- **Sync-Safe Publishing**: `publish(event, doctor_id=..., roles=...)` safely schedules async WebSocket dispatch from synchronous REST endpoints without blocking request execution or raising exceptions.
+- **Authentication**: Token must be passed in the `token` query parameter. If missing or invalid, the connection is closed with status code `4401`.
+- **Role Registration**: Client `role` and `doctor_id` are extracted directly from the verified JWT claims.
+- **Keepalive Protocol**: Send `"ping"` to receive `"pong"`. Dead connections are pruned automatically.
 
 ### Broadcast Event Types
 | Event Type | Description | Key Payload Attributes |
@@ -72,32 +126,34 @@ ws://127.0.0.1:8000/ws?role=<role>&doctor_id=<doctor_id>
 | `alert` | High-priority clinical notification | `alert` object, `patient_id`, `doctor_id`, `level`, `message` |
 
 ### Clinical Alert Rules
-- **Critical Assignment Alert**: When a Level 1 or Level 2 patient is assigned, an alert is dispatched to the assigned doctor (`doctor_id`) and broadcast to `nurse` and `admin` roles:
+- **Critical Assignment Alert**: Dispatched to the assigned doctor and nurse/admin dashboards:
   ```text
   CRITICAL: <Patient Name> (Level <X>) assigned to <Bed ID>. Reasons: <Reason Tags>
   ```
-- **Waitlisted Level 1 Alert**: When a Level 1 resuscitation patient cannot be allocated an ICU/Emergency bed, an immediate alert is dispatched to `nurse` and `admin` dashboards:
+- **Waitlisted Level 1 Alert**: Dispatched to nurse/admin dashboards when a Level 1 patient cannot be allocated an ICU/Emergency bed:
   ```text
   NO BED: <Patient Name> (Level 1) is waitlisted
   ```
-- **Re-prioritization Alert**: When vital deterioration increases a patient's acuity (new urgency level is more urgent than previous), an alert is dispatched to the assigned doctor and nurse/admin dashboards:
+- **Re-prioritization Alert**: Dispatched to assigned doctor and nurse/admin dashboards when acuity worsens:
   ```text
   Re-prioritized: <Patient Name> moved from Level <Old> to Level <New>
   ```
-- **Routine Silence**: Routine Level 3, 4, and 5 admissions do not generate clinical alerts.
+- **Routine Silence**: Routine Level 3–5 admissions do not generate clinical alerts.
 
 ### Live Demo WebSocket Client
-Run the provided demo client in a terminal to monitor live updates:
+The client logs in via OAuth2 first, obtains a JWT token, and connects to `/ws?token=<jwt>`:
 ```bash
 cd backend
+# Listen as nurse1 (default):
 .venv/bin/python ws_client_demo.py
-# Or listen as a specific physician:
-.venv/bin/python ws_client_demo.py "ws://127.0.0.1:8000/ws?role=doctor&doctor_id=3"
+
+# Listen as a specific physician (Dr. Elena Rostova):
+.venv/bin/python ws_client_demo.py -u dr3 -p demo123
 ```
 
 ---
 
-## 4. Running Automated Tests
+## 6. Running Automated Tests
 
 Run the full pytest suite from inside `backend/`. Tests use an isolated in-memory SQLite database (`StaticPool`), leaving `triage.db` untouched:
 
@@ -106,50 +162,27 @@ cd backend
 .venv/bin/pytest -v
 ```
 
-All 25 unit and integration tests verify:
-- API endpoint contracts and input validation
-- Acuity sorting and color-coding logic
-- Allocation hierarchies, ventilator matching, and doctor capacity constraints
-- Dynamic bed upgrades and waiting queue auto-allocation on discharge/cleaning
-- WebSocket ping/pong and event delivery
-- Provider-targeted alert delivery and unassigned filtering
-- Re-prioritization alerts and alert acknowledgement
+All 32 tests verify:
+- OAuth2 login flow, password verification, and bad credential rejection
+- Token expiration, tampered token rejection, and unauthenticated request blocks (401)
+- Role-based permissions matrix across all routes (403 Forbidden enforcement)
+- Admin-only user management (creation, listing, deactivation) and password hash hiding
+- Doctor alert isolation (doctors cannot view or acknowledge other doctors' alerts)
+- WebSocket token authentication (code 4401 rejection for invalid/missing tokens)
+- Resource allocation hierarchies, ventilator constraints, and doctor capacity limits
+- Acuity sorting, queue wait times, and dynamic bed upgrade triggers
 
 ---
 
-## 5. Running the Patient Cohort Simulator
+## 7. Running the Patient Cohort Simulator
 
-A realistic patient simulator is provided in `simulate.py` to stream patient cohorts through the API:
+Stream realistic patient cohorts through the API (automatically authenticates as `nurse1`):
 
 ```bash
 cd backend
 .venv/bin/python simulate.py --reset -n 25
 ```
 
-- `--reset`: Resets `triage.db` (clears alerts, patients, and audit logs, sets all beds and doctors back to `AVAILABLE`).
+- `--reset`: Resets `triage.db` (clears alerts, patients, and audit logs; preserves user accounts; resets beds and doctors to `AVAILABLE`).
 - `-n / --patients`: Number of patients to stream (default: 25).
 - Outputs patient admissions, real-time allocation/waitlist events, and an end-of-run resource summary.
-
----
-
-## 6. API Endpoints Reference
-
-| Method | Endpoint | Description | Request Body | Response Status |
-|---|---|---|---|---|
-| `GET` | `/health` | Health check endpoint | None | `200 OK` |
-| `POST` | `/patients` | Patient intake: runs ML triage, allocates bed and doctor, logs audit trail, dispatches alerts | `PatientCreate` | `201 Created` |
-| `GET` | `/patients` | List patients (supports optional `?status=` filter), ordered by urgency (1 first), then wait time | None | `200 OK` |
-| `GET` | `/patients/{id}` | Retrieve details of a single patient by ID | None | `200 OK` / `404 Not Found` |
-| `PUT` | `/patients/{id}/vitals` | Update vitals, re-evaluate ML triage, upgrade bed if acuity worsened, generate alerts | `VitalsUpdate` | `200 OK` / `404 Not Found` |
-| `PUT` | `/patients/{id}/discharge` | Mark patient as `DISCHARGED`, set bed to `CLEANING`, decrement doctor workload, and trigger allocation for waiting queue | None | `200 OK` / `404 Not Found` |
-| `GET` | `/patients/{id}/audit` | Retrieve complete chronological audit trail for a patient (newest entries first) | None | `200 OK` / `404 Not Found` |
-| `GET` | `/queue` | Priority queue of `WAITING` patients enriched with color (`RED`, `YELLOW`, `GREEN`) and `wait_minutes` | None | `200 OK` |
-| `GET` | `/beds` | Read-only listing of hospital bed resources and status | None | `200 OK` |
-| `PUT` | `/beds/{id}/status` | Update bed status (`AVAILABLE`, `OCCUPIED`, `CLEANING`). Setting to `AVAILABLE` triggers allocation of waiting queue | `BedStatusUpdate` | `200 OK` / `404 Not Found` |
-| `GET` | `/doctors` | Read-only listing of on-duty physicians and availability | None | `200 OK` |
-| `PUT` | `/doctors/{id}/availability` | Toggle doctor availability (`is_available`). Setting to `True` triggers allocation of waiting queue | `DoctorAvailabilityUpdate` | `200 OK` / `404 Not Found` |
-| `GET` | `/resources/summary` | Real-time breakdown of bed occupancy per ward, free ventilators, available doctors, and waiting queue length | None | `200 OK` |
-| `POST` | `/allocate/run` | Manually run allocation engine over waiting queue | None | `200 OK` |
-| `GET` | `/alerts` | Query clinical alerts (supports optional `?doctor_id=` and `?unacknowledged_only=true` filters) | None | `200 OK` |
-| `PUT` | `/alerts/{id}/acknowledge` | Acknowledge a clinical alert | None | `200 OK` / `404 Not Found` |
-| `WS` | `/ws` | WebSocket live stream for telemetry and doctor-specific alerts | Text / JSON | `101 Switching Protocols` |

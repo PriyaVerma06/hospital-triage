@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
-from models import BedStatus, BedWard, DoctorSpecialty, PatientStatus
+from models import BedStatus, BedWard, DoctorSpecialty, PatientStatus, UserRole
 
 
 # --- Vitals Base ---
@@ -194,3 +194,39 @@ class AllocateRunResponse(BaseModel):
     """Outcome of manually executing waiting queue allocation."""
     assigned_patient_ids: List[int]
     count: int
+
+
+# --- User & Auth Schemas ---
+
+class UserOut(BaseModel):
+    """Output representation of a system user."""
+    id: int
+    username: str
+    full_name: str
+    role: UserRole
+    doctor_id: Optional[int] = None
+    is_active: bool
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class UserCreate(BaseModel):
+    """Schema for registering or provisioning a new user."""
+    username: str = Field(..., min_length=3, max_length=50, description="Unique login username")
+    password: str = Field(..., min_length=6, description="Plaintext initial password (hashed on storage)")
+    full_name: str = Field(..., min_length=1, max_length=150, description="User's full display name")
+    role: UserRole = Field(..., description="Authorization role: NURSE, DOCTOR, or ADMIN")
+    doctor_id: Optional[int] = Field(None, description="Linked doctor ID (required for DOCTOR role)")
+
+
+class UserActiveUpdate(BaseModel):
+    """Schema for toggling user account active status."""
+    is_active: bool = Field(..., description="Active status flag")
+
+
+class LoginResponse(BaseModel):
+    """OAuth2 access token response."""
+    access_token: str
+    token_type: str = "bearer"
+    user: UserOut
+

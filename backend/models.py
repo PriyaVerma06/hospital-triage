@@ -52,6 +52,13 @@ class DoctorSpecialty(str, enum.Enum):
     GENERAL = "General"
 
 
+class UserRole(str, enum.Enum):
+    """User account authorization role."""
+    NURSE = "NURSE"
+    DOCTOR = "DOCTOR"
+    ADMIN = "ADMIN"
+
+
 # --- Database Models ---
 
 class Patient(Base):
@@ -115,6 +122,7 @@ class Doctor(Base):
     # Relationships
     patients = relationship("Patient", back_populates="doctor")
     alerts = relationship("Alert", back_populates="doctor")
+    user = relationship("User", back_populates="doctor", uselist=False)
 
 
 class AuditLog(Base):
@@ -145,4 +153,21 @@ class Alert(Base):
     # Relationships
     patient = relationship("Patient", back_populates="alerts")
     doctor = relationship("Doctor", back_populates="alerts")
+
+
+class User(Base):
+    """System user account for authentication and role-based access control."""
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    full_name = Column(String, nullable=False)
+    role = Column(Enum(UserRole), nullable=False)
+    doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=True)
+    is_active = Column(Boolean, default=True, nullable=False)
+
+    # Relationships
+    doctor = relationship("Doctor", back_populates="user")
+
 
