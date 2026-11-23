@@ -1,0 +1,11 @@
+{
+    "accuracy": 0.9575,
+    "recall_level_1": 0.9187935034802784,
+    "recall_level_2": 0.8190045248868778,
+    "mean_critical_recall": 0.8688990141835782,
+    "library_versions": {
+        "xgboost": "3.4.1",
+        "scikit-learn": "1.6.1",
+        "shap": "0.54.1"
+    }
+}

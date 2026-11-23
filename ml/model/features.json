@@ -1,0 +1,18 @@
+[
+    "age",
+    "gender",
+    "sbp",
+    "dbp",
+    "hr",
+    "spo2",
+    "temp",
+    "rr",
+    "chest_pain",
+    "breathlessness",
+    "unconscious",
+    "severe_bleeding",
+    "fever",
+    "abdominal_pain",
+    "headache",
+    "minor_injury"
+]
