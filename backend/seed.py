@@ -4,7 +4,7 @@ Idempotent: clears existing Bed and Doctor records so it can be safely re-run.
 """
 
 from database import Base, SessionLocal, engine
-from models import Bed, BedStatus, BedWard, Doctor, DoctorSpecialty
+from models import Alert, Bed, BedStatus, BedWard, Doctor, DoctorSpecialty
 
 
 def seed():
@@ -14,6 +14,7 @@ def seed():
     db = SessionLocal()
     try:
         # Clear existing rows for idempotency
+        db.query(Alert).delete()
         db.query(Bed).delete()
         db.query(Doctor).delete()
         db.commit()

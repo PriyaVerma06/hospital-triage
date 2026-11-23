@@ -1,6 +1,6 @@
-# Hospital Triage Backend API & Resource Allocation Engine
+# Hospital Triage Backend API & Real-Time Alert Engine
 
-FastAPI core service powering the hospital emergency triage system. Provides clinical intake validation, ML-driven triage evaluation, deterministic resource allocation (beds and physicians), priority queue management, vital re-prioritization, and audit logging.
+FastAPI core service powering the hospital emergency triage system. Provides clinical intake validation, ML-driven triage evaluation, deterministic resource allocation (beds and physicians), priority queue management, vital re-prioritization, clinical alert service, real-time WebSocket live updates, and comprehensive audit logging.
 
 ---
 
@@ -45,18 +45,79 @@ The resource matching engine (`backend/allocation.py`) matches admitted patients
 
 ---
 
-## 3. Running Automated Tests
+## 3. Real-Time WebSockets & Clinical Alert Service
 
-Run the full pytest suite from inside `backend/`. Tests use an isolated in-memory SQLite database, leaving `triage.db` untouched:
+The live updates and notification system (`backend/realtime.py` & `backend/alerts.py`) broadcasts real-time telemetry to hospital staff dashboards and sends targeted critical alerts to physicians.
+
+### WebSocket Endpoint: `/ws`
+Connect via WebSocket client:
+```text
+ws://127.0.0.1:8000/ws?role=<role>&doctor_id=<doctor_id>
+```
+- **Query Parameters**:
+  - `role` *(optional)*: Client role (e.g. `nurse`, `admin`, `doctor`).
+  - `doctor_id` *(optional)*: Integer ID of physician to receive doctor-specific clinical alerts.
+- **Keepalive Protocol**: Clients send `"ping"`, server immediately responds `"pong"`. Dead connections are pruned automatically.
+- **Sync-Safe Publishing**: `publish(event, doctor_id=..., roles=...)` safely schedules async WebSocket dispatch from synchronous REST endpoints without blocking request execution or raising exceptions.
+
+### Broadcast Event Types
+| Event Type | Description | Key Payload Attributes |
+|---|---|---|
+| `patient_created` | New patient admitted and triaged | `patient_id`, `urgency_level`, `status` |
+| `patient_updated` | Vitals updated or patient re-prioritized | `patient_id`, `urgency_level`, `status`, `level_changed`, `previous_level` |
+| `patient_discharged` | Patient discharged, bed moved to `CLEANING` | `patient_id`, `released_bed_id`, `released_doctor_id` |
+| `queue_changed` | Waiting queue membership or order altered | None |
+| `bed_changed` | Bed status modified or patient assigned | `bed_id` |
+| `resources_changed` | Bed, ventilator, or doctor availability updated | None |
+| `alert` | High-priority clinical notification | `alert` object, `patient_id`, `doctor_id`, `level`, `message` |
+
+### Clinical Alert Rules
+- **Critical Assignment Alert**: When a Level 1 or Level 2 patient is assigned, an alert is dispatched to the assigned doctor (`doctor_id`) and broadcast to `nurse` and `admin` roles:
+  ```text
+  CRITICAL: <Patient Name> (Level <X>) assigned to <Bed ID>. Reasons: <Reason Tags>
+  ```
+- **Waitlisted Level 1 Alert**: When a Level 1 resuscitation patient cannot be allocated an ICU/Emergency bed, an immediate alert is dispatched to `nurse` and `admin` dashboards:
+  ```text
+  NO BED: <Patient Name> (Level 1) is waitlisted
+  ```
+- **Re-prioritization Alert**: When vital deterioration increases a patient's acuity (new urgency level is more urgent than previous), an alert is dispatched to the assigned doctor and nurse/admin dashboards:
+  ```text
+  Re-prioritized: <Patient Name> moved from Level <Old> to Level <New>
+  ```
+- **Routine Silence**: Routine Level 3, 4, and 5 admissions do not generate clinical alerts.
+
+### Live Demo WebSocket Client
+Run the provided demo client in a terminal to monitor live updates:
+```bash
+cd backend
+.venv/bin/python ws_client_demo.py
+# Or listen as a specific physician:
+.venv/bin/python ws_client_demo.py "ws://127.0.0.1:8000/ws?role=doctor&doctor_id=3"
+```
+
+---
+
+## 4. Running Automated Tests
+
+Run the full pytest suite from inside `backend/`. Tests use an isolated in-memory SQLite database (`StaticPool`), leaving `triage.db` untouched:
 
 ```bash
 cd backend
 .venv/bin/pytest -v
 ```
 
+All 25 unit and integration tests verify:
+- API endpoint contracts and input validation
+- Acuity sorting and color-coding logic
+- Allocation hierarchies, ventilator matching, and doctor capacity constraints
+- Dynamic bed upgrades and waiting queue auto-allocation on discharge/cleaning
+- WebSocket ping/pong and event delivery
+- Provider-targeted alert delivery and unassigned filtering
+- Re-prioritization alerts and alert acknowledgement
+
 ---
 
-## 4. Running the Patient Cohort Simulator
+## 5. Running the Patient Cohort Simulator
 
 A realistic patient simulator is provided in `simulate.py` to stream patient cohorts through the API:
 
@@ -65,21 +126,21 @@ cd backend
 .venv/bin/python simulate.py --reset -n 25
 ```
 
-- `--reset`: Resets `triage.db` (clears patients and audit logs, sets all beds and doctors back to `AVAILABLE`).
+- `--reset`: Resets `triage.db` (clears alerts, patients, and audit logs, sets all beds and doctors back to `AVAILABLE`).
 - `-n / --patients`: Number of patients to stream (default: 25).
 - Outputs patient admissions, real-time allocation/waitlist events, and an end-of-run resource summary.
 
 ---
 
-## 5. API Endpoints Reference
+## 6. API Endpoints Reference
 
 | Method | Endpoint | Description | Request Body | Response Status |
 |---|---|---|---|---|
 | `GET` | `/health` | Health check endpoint | None | `200 OK` |
-| `POST` | `/patients` | Patient intake: runs ML triage, allocates bed and doctor, logs audit trail | `PatientCreate` | `201 Created` |
+| `POST` | `/patients` | Patient intake: runs ML triage, allocates bed and doctor, logs audit trail, dispatches alerts | `PatientCreate` | `201 Created` |
 | `GET` | `/patients` | List patients (supports optional `?status=` filter), ordered by urgency (1 first), then wait time | None | `200 OK` |
 | `GET` | `/patients/{id}` | Retrieve details of a single patient by ID | None | `200 OK` / `404 Not Found` |
-| `PUT` | `/patients/{id}/vitals` | Update vitals, re-evaluate ML triage, upgrade bed if acuity worsened, log audit event | `VitalsUpdate` | `200 OK` / `404 Not Found` |
+| `PUT` | `/patients/{id}/vitals` | Update vitals, re-evaluate ML triage, upgrade bed if acuity worsened, generate alerts | `VitalsUpdate` | `200 OK` / `404 Not Found` |
 | `PUT` | `/patients/{id}/discharge` | Mark patient as `DISCHARGED`, set bed to `CLEANING`, decrement doctor workload, and trigger allocation for waiting queue | None | `200 OK` / `404 Not Found` |
 | `GET` | `/patients/{id}/audit` | Retrieve complete chronological audit trail for a patient (newest entries first) | None | `200 OK` / `404 Not Found` |
 | `GET` | `/queue` | Priority queue of `WAITING` patients enriched with color (`RED`, `YELLOW`, `GREEN`) and `wait_minutes` | None | `200 OK` |
@@ -89,10 +150,6 @@ cd backend
 | `PUT` | `/doctors/{id}/availability` | Toggle doctor availability (`is_available`). Setting to `True` triggers allocation of waiting queue | `DoctorAvailabilityUpdate` | `200 OK` / `404 Not Found` |
 | `GET` | `/resources/summary` | Real-time breakdown of bed occupancy per ward, free ventilators, available doctors, and waiting queue length | None | `200 OK` |
 | `POST` | `/allocate/run` | Manually run allocation engine over waiting queue | None | `200 OK` |
-
----
-
-## 6. Planned Extensions (Step 5)
-Provider notifications and alerting hooks will be integrated via placeholders marked `# TODO Step 5: send alert to assigned doctor`:
-- Real-time notification dispatch when a physician is assigned to a high-acuity patient.
-- Escalation alerts when a patient is re-prioritized or moved between wards.
+| `GET` | `/alerts` | Query clinical alerts (supports optional `?doctor_id=` and `?unacknowledged_only=true` filters) | None | `200 OK` |
+| `PUT` | `/alerts/{id}/acknowledge` | Acknowledge a clinical alert | None | `200 OK` / `404 Not Found` |
+| `WS` | `/ws` | WebSocket live stream for telemetry and doctor-specific alerts | Text / JSON | `101 Switching Protocols` |

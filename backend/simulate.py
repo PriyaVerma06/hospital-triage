@@ -11,7 +11,7 @@ from typing import Dict, List
 import httpx
 
 from database import SessionLocal
-from models import AuditLog, Bed, BedStatus, Doctor, Patient
+from models import Alert, AuditLog, Bed, BedStatus, Doctor, Patient
 
 
 FIRST_NAMES = ["James", "Mary", "John", "Patricia", "Robert", "Jennifer", "Michael", "Linda",
@@ -30,7 +30,8 @@ def reset_database():
     print("Resetting database to clean initial state...")
     db = SessionLocal()
     try:
-        # 1. Delete all audit logs and patient records
+        # 1. Delete all alerts, audit logs, and patient records
+        db.query(Alert).delete()
         db.query(AuditLog).delete()
         db.query(Patient).delete()
 

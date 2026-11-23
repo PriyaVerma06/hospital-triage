@@ -86,6 +86,7 @@ class Patient(Base):
     bed = relationship("Bed", back_populates="patients")
     doctor = relationship("Doctor", back_populates="patients")
     audit_logs = relationship("AuditLog", back_populates="patient", cascade="all, delete-orphan")
+    alerts = relationship("Alert", back_populates="patient", cascade="all, delete-orphan")
 
 
 class Bed(Base):
@@ -113,6 +114,7 @@ class Doctor(Base):
 
     # Relationships
     patients = relationship("Patient", back_populates="doctor")
+    alerts = relationship("Alert", back_populates="doctor")
 
 
 class AuditLog(Base):
@@ -126,3 +128,21 @@ class AuditLog(Base):
 
     # Relationships
     patient = relationship("Patient", back_populates="audit_logs")
+
+
+class Alert(Base):
+    """Clinical emergency alert dispatched to doctors and nurses/admins."""
+    __tablename__ = "alerts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    patient_id = Column(Integer, ForeignKey("patients.id"), nullable=False)
+    doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=True)
+    level = Column(Integer, nullable=False)
+    message = Column(String, nullable=False)
+    acknowledged = Column(Boolean, default=False, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    patient = relationship("Patient", back_populates="alerts")
+    doctor = relationship("Doctor", back_populates="alerts")
+

@@ -139,6 +139,19 @@ class AuditLogOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class AlertOut(BaseModel):
+    """Output representation of a clinical emergency alert."""
+    id: int
+    patient_id: int
+    doctor_id: Optional[int] = None
+    level: int
+    message: str
+    acknowledged: bool
+    created_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class BedOut(BaseModel):
     """Output representation of a hospital bed resource."""
     id: str

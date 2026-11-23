@@ -1,17 +1,22 @@
 """
 FastAPI application for the hospital emergency triage system.
-Provides RESTful APIs for patient intake, triage execution, resource allocation,
-queue management, and audit trail recording.
+Provides RESTful APIs and WebSocket live updates for patient intake, triage execution,
+resource allocation, queue management, clinical alerts, and audit trail recording.
 """
 
+import asyncio
 from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
+from alerts import (
+    check_and_alert_assignment,
+    check_and_alert_reprioritization,
+)
 from allocation import (
     MAX_PATIENTS_PER_DOCTOR,
     allocate_waiting,
@@ -20,8 +25,10 @@ from allocation import (
     try_upgrade_bed,
 )
 from database import Base, engine, get_db
-from models import AuditLog, Bed, BedStatus, BedWard, Doctor, Patient, PatientStatus
+from models import Alert, AuditLog, Bed, BedStatus, BedWard, Doctor, Patient, PatientStatus
+from realtime import manager, publish, set_event_loop
 from schemas import (
+    AlertOut,
     AllocateRunResponse,
     AllocationResult,
     AuditLogOut,
@@ -43,7 +50,8 @@ from triage_service import run_triage
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan context: ensure database tables are initialized on startup."""
+    """Application lifespan context: capture running event loop and initialize DB schema."""
+    set_event_loop(asyncio.get_running_loop())
     Base.metadata.create_all(bind=engine)
     yield
 
@@ -74,6 +82,31 @@ def _get_triage_color(urgency_level: Optional[int]) -> str:
     return "GREEN"
 
 
+# --- WebSocket Live Updates ---
+
+@app.websocket("/ws")
+async def websocket_endpoint(
+    websocket: WebSocket,
+    role: Optional[str] = Query(None, description="Client role, e.g. nurse, admin, doctor"),
+    doctor_id: Optional[int] = Query(None, description="Doctor ID for provider-specific alerts"),
+):
+    """
+    WebSocket endpoint for real-time dashboard events and doctor-targeted alerts.
+    Keeps connection alive, responds to 'ping' with 'pong', and unregisters on disconnect.
+    """
+    set_event_loop(asyncio.get_running_loop())
+    await manager.connect(websocket, role=role, doctor_id=doctor_id)
+    try:
+        while True:
+            text = await websocket.receive_text()
+            if text.strip().lower() == "ping":
+                await websocket.send_text("pong")
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception:
+        manager.disconnect(websocket)
+
+
 # --- Health Check ---
 
 @app.get("/health", tags=["System"])
@@ -96,7 +129,8 @@ def create_patient(
 ):
     """
     Intake a new emergency patient: validates inputs, evaluates triage with ML model,
-    records initial triage in AuditLog, attempts resource allocation, and adds to queue.
+    records initial triage in AuditLog, attempts resource allocation, dispatches alerts,
+    and broadcasts real-time events.
     """
     # 1. Run ML triage prediction
     urgency_level, reason_tags, confidence = run_triage(patient_in)
@@ -131,11 +165,23 @@ def create_patient(
     db.commit()
     db.refresh(db_patient)
 
-    # 4. Resource Allocation Engine (Step 4)
+    # 4. Resource Allocation Engine
     alloc_dict = assign_patient(db, db_patient)
-    if alloc_dict["assigned"]:
-        # TODO Step 5: send alert to assigned doctor
-        pass
+
+    # 5. Alert Dispatch
+    check_and_alert_assignment(db, db_patient)
+
+    # 6. Real-Time Event Broadcast
+    publish({
+        "type": "patient_created",
+        "patient_id": db_patient.id,
+        "urgency_level": db_patient.urgency_level,
+        "status": db_patient.status.value,
+    })
+    publish({"type": "queue_changed"})
+    publish({"type": "resources_changed"})
+    if db_patient.assigned_bed_id:
+        publish({"type": "bed_changed", "bed_id": db_patient.assigned_bed_id})
 
     # Build response with prediction confidence and allocation details
     patient_data = PatientOut.model_validate(db_patient).model_dump()
@@ -197,7 +243,7 @@ def update_patient_vitals(
 ):
     """
     Update patient vital signs, re-run ML triage, update level and reason tags,
-    record re-prioritization event, and re-evaluate bed assignment.
+    record re-prioritization event, re-evaluate bed assignment, and send alerts if acuity worsened.
     """
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
@@ -233,18 +279,30 @@ def update_patient_vitals(
     db.commit()
     db.refresh(patient)
 
-    # Resource allocation re-evaluation (Step 4)
+    # Trigger re-prioritization alert if acuity worsened
+    check_and_alert_reprioritization(db, patient, previous_level=previous_level, new_urgency=new_urgency)
+
+    # Resource allocation re-evaluation
     alloc_result = None
     if patient.status == PatientStatus.WAITING:
         # Patient was waitlisted, attempt allocation with updated vitals/acuity
         alloc_result = assign_patient(db, patient)
-        if alloc_result["assigned"]:
-            # TODO Step 5: send alert to assigned doctor
-            pass
+        check_and_alert_assignment(db, patient)
     elif patient.status == PatientStatus.ASSIGNED and level_changed and new_urgency < previous_level:
         # Patient acuity worsened (e.g. 4 -> 1): attempt bed upgrade
         alloc_result = try_upgrade_bed(db, patient)
-        # TODO Step 5: send alert to assigned doctor
+
+    # Broadcast real-time events
+    publish({
+        "type": "patient_updated",
+        "patient_id": patient.id,
+        "urgency_level": patient.urgency_level,
+        "level_changed": level_changed,
+    })
+    publish({"type": "queue_changed"})
+    publish({"type": "resources_changed"})
+    if patient.assigned_bed_id:
+        publish({"type": "bed_changed", "bed_id": patient.assigned_bed_id})
 
     patient_data = PatientOut.model_validate(patient).model_dump()
     return VitalsUpdateResponse(
@@ -266,7 +324,7 @@ def discharge_patient(
 ):
     """
     Discharge a patient: marks status as DISCHARGED, releases allocated bed (set to CLEANING)
-    and doctor load, then triggers allocation for remaining waiting patients.
+    and doctor load, then triggers allocation and alerts for remaining waiting patients.
     """
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
@@ -275,13 +333,27 @@ def discharge_patient(
             detail=f"Patient with ID {patient_id} not found",
         )
 
+    discharged_bed_id = patient.assigned_bed_id
     patient.status = PatientStatus.DISCHARGED
     db.add(AuditLog(patient_id=patient.id, event="Patient discharged", timestamp=datetime.utcnow()))
     db.commit()
 
-    # Step 4: Release resources and re-allocate to waiting patients
+    # Release resources and re-allocate to waiting patients
     release_patient_resources(db, patient)
-    allocate_waiting(db)
+    newly_assigned_ids = allocate_waiting(db)
+
+    # Alert for any newly assigned critical patients
+    for p_id in newly_assigned_ids:
+        p_obj = db.query(Patient).filter(Patient.id == p_id).first()
+        if p_obj:
+            check_and_alert_assignment(db, p_obj)
+
+    # Broadcast real-time updates
+    publish({"type": "patient_discharged", "patient_id": patient.id})
+    publish({"type": "queue_changed"})
+    publish({"type": "resources_changed"})
+    if discharged_bed_id:
+        publish({"type": "bed_changed", "bed_id": discharged_bed_id})
 
     db.refresh(patient)
     return patient
@@ -348,6 +420,51 @@ def get_triage_queue(db: Session = Depends(get_db)):
     return queue_list
 
 
+# --- Clinical Alerts ---
+
+@app.get(
+    "/alerts",
+    response_model=List[AlertOut],
+    tags=["Alerts"],
+)
+def list_alerts(
+    doctor_id: Optional[int] = Query(None, description="Filter alerts by doctor ID"),
+    unacknowledged_only: bool = Query(False, description="Filter only unacknowledged alerts"),
+    db: Session = Depends(get_db),
+):
+    """Retrieve hospital emergency alerts, newest entries first."""
+    query = db.query(Alert)
+    if doctor_id is not None:
+        query = query.filter(Alert.doctor_id == doctor_id)
+    if unacknowledged_only:
+        query = query.filter(Alert.acknowledged == False)
+
+    return query.order_by(Alert.created_at.desc(), Alert.id.desc()).all()
+
+
+@app.put(
+    "/alerts/{alert_id}/acknowledge",
+    response_model=AlertOut,
+    tags=["Alerts"],
+)
+def acknowledge_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+):
+    """Acknowledge a clinical alert."""
+    alert = db.query(Alert).filter(Alert.id == alert_id).first()
+    if not alert:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Alert with ID {alert_id} not found",
+        )
+
+    alert.acknowledged = True
+    db.commit()
+    db.refresh(alert)
+    return alert
+
+
 # --- Hospital Resources & Allocation Management ---
 
 @app.get(
@@ -386,8 +503,16 @@ def update_bed_status(
     db.refresh(bed)
 
     if bed.status == BedStatus.AVAILABLE:
-        allocate_waiting(db)
+        newly_assigned_ids = allocate_waiting(db)
+        for p_id in newly_assigned_ids:
+            p_obj = db.query(Patient).filter(Patient.id == p_id).first()
+            if p_obj:
+                check_and_alert_assignment(db, p_obj)
         db.refresh(bed)
+
+    publish({"type": "bed_changed", "bed_id": bed.id, "status": bed.status.value})
+    publish({"type": "resources_changed"})
+    publish({"type": "queue_changed"})
 
     return bed
 
@@ -428,8 +553,15 @@ def update_doctor_availability(
     db.refresh(doctor)
 
     if doctor.is_available:
-        allocate_waiting(db)
+        newly_assigned_ids = allocate_waiting(db)
+        for p_id in newly_assigned_ids:
+            p_obj = db.query(Patient).filter(Patient.id == p_id).first()
+            if p_obj:
+                check_and_alert_assignment(db, p_obj)
         db.refresh(doctor)
+
+    publish({"type": "resources_changed"})
+    publish({"type": "queue_changed"})
 
     return doctor
 
@@ -490,6 +622,15 @@ def get_resources_summary(db: Session = Depends(get_db)):
 def run_manual_allocation(db: Session = Depends(get_db)):
     """Manually execute waiting queue allocation algorithm and return assigned patient IDs."""
     assigned_ids = allocate_waiting(db)
+    for p_id in assigned_ids:
+        p_obj = db.query(Patient).filter(Patient.id == p_id).first()
+        if p_obj:
+            check_and_alert_assignment(db, p_obj)
+
+    if assigned_ids:
+        publish({"type": "queue_changed"})
+        publish({"type": "resources_changed"})
+
     return AllocateRunResponse(
         assigned_patient_ids=assigned_ids,
         count=len(assigned_ids),
