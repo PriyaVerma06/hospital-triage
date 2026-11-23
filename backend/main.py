@@ -1,7 +1,7 @@
 """
 FastAPI application for the hospital emergency triage system.
-Provides RESTful APIs for patient intake, triage execution, queue management,
-and audit trail recording.
+Provides RESTful APIs for patient intake, triage execution, resource allocation,
+queue management, and audit trail recording.
 """
 
 from contextlib import asynccontextmanager
@@ -12,18 +12,31 @@ from fastapi import Depends, FastAPI, HTTPException, Query, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 
+from allocation import (
+    MAX_PATIENTS_PER_DOCTOR,
+    allocate_waiting,
+    assign_patient,
+    release_patient_resources,
+    try_upgrade_bed,
+)
 from database import Base, engine, get_db
-from models import AuditLog, Bed, Doctor, Patient, PatientStatus
+from models import AuditLog, Bed, BedStatus, BedWard, Doctor, Patient, PatientStatus
 from schemas import (
+    AllocateRunResponse,
+    AllocationResult,
     AuditLogOut,
     BedOut,
+    BedStatusUpdate,
+    DoctorAvailabilityUpdate,
     DoctorOut,
     PatientCreate,
     PatientCreateResponse,
     PatientOut,
     QueuePatientOut,
+    ResourcesSummary,
     VitalsUpdate,
     VitalsUpdateResponse,
+    WardBedCounts,
 )
 from triage_service import run_triage
 
@@ -37,7 +50,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Hospital Triage System API",
-    description="Emergency department patient triage, vital tracking, and queue management API.",
+    description="Emergency department patient triage, vital tracking, and resource allocation API.",
     version="1.0.0",
     lifespan=lifespan,
 )
@@ -83,7 +96,7 @@ def create_patient(
 ):
     """
     Intake a new emergency patient: validates inputs, evaluates triage with ML model,
-    records the initial triage event in AuditLog, and adds to WAITING queue.
+    records initial triage in AuditLog, attempts resource allocation, and adds to queue.
     """
     # 1. Run ML triage prediction
     urgency_level, reason_tags, confidence = run_triage(patient_in)
@@ -108,8 +121,6 @@ def create_patient(
     db.add(db_patient)
     db.flush()  # Obtain generated db_patient.id
 
-    # TODO Step 4: Automatic bed and doctor assignment plugs in here
-
     # 3. Write initial triage audit log
     audit_entry = AuditLog(
         patient_id=db_patient.id,
@@ -120,11 +131,18 @@ def create_patient(
     db.commit()
     db.refresh(db_patient)
 
-    # Build response with prediction confidence
+    # 4. Resource Allocation Engine (Step 4)
+    alloc_dict = assign_patient(db, db_patient)
+    if alloc_dict["assigned"]:
+        # TODO Step 5: send alert to assigned doctor
+        pass
+
+    # Build response with prediction confidence and allocation details
     patient_data = PatientOut.model_validate(db_patient).model_dump()
     return PatientCreateResponse(
         **patient_data,
         confidence=confidence,
+        allocation=AllocationResult(**alloc_dict),
     )
 
 
@@ -179,7 +197,7 @@ def update_patient_vitals(
 ):
     """
     Update patient vital signs, re-run ML triage, update level and reason tags,
-    and log re-prioritization event in AuditLog.
+    record re-prioritization event, and re-evaluate bed assignment.
     """
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
@@ -205,8 +223,6 @@ def update_patient_vitals(
 
     level_changed = (new_urgency != previous_level)
 
-    # TODO Step 4: Re-evaluate bed and doctor assignment plugs in here
-
     # Record appropriate audit log
     if level_changed:
         audit_event = f"Re-prioritized from Level {previous_level} to Level {new_urgency}"
@@ -217,11 +233,25 @@ def update_patient_vitals(
     db.commit()
     db.refresh(patient)
 
+    # Resource allocation re-evaluation (Step 4)
+    alloc_result = None
+    if patient.status == PatientStatus.WAITING:
+        # Patient was waitlisted, attempt allocation with updated vitals/acuity
+        alloc_result = assign_patient(db, patient)
+        if alloc_result["assigned"]:
+            # TODO Step 5: send alert to assigned doctor
+            pass
+    elif patient.status == PatientStatus.ASSIGNED and level_changed and new_urgency < previous_level:
+        # Patient acuity worsened (e.g. 4 -> 1): attempt bed upgrade
+        alloc_result = try_upgrade_bed(db, patient)
+        # TODO Step 5: send alert to assigned doctor
+
     patient_data = PatientOut.model_validate(patient).model_dump()
     return VitalsUpdateResponse(
         **patient_data,
         previous_level=previous_level,
         level_changed=level_changed,
+        allocation=alloc_result,
     )
 
 
@@ -234,7 +264,10 @@ def discharge_patient(
     patient_id: int,
     db: Session = Depends(get_db),
 ):
-    """Discharge a patient and log the event."""
+    """
+    Discharge a patient: marks status as DISCHARGED, releases allocated bed (set to CLEANING)
+    and doctor load, then triggers allocation for remaining waiting patients.
+    """
     patient = db.query(Patient).filter(Patient.id == patient_id).first()
     if not patient:
         raise HTTPException(
@@ -243,10 +276,13 @@ def discharge_patient(
         )
 
     patient.status = PatientStatus.DISCHARGED
-    # TODO Step 4: Release assigned bed and doctor plugs in here
-
     db.add(AuditLog(patient_id=patient.id, event="Patient discharged", timestamp=datetime.utcnow()))
     db.commit()
+
+    # Step 4: Release resources and re-allocate to waiting patients
+    release_patient_resources(db, patient)
+    allocate_waiting(db)
+
     db.refresh(patient)
     return patient
 
@@ -312,7 +348,7 @@ def get_triage_queue(db: Session = Depends(get_db)):
     return queue_list
 
 
-# --- Hospital Resources (Read-Only) ---
+# --- Hospital Resources & Allocation Management ---
 
 @app.get(
     "/beds",
@@ -324,6 +360,38 @@ def list_beds(db: Session = Depends(get_db)):
     return db.query(Bed).order_by(Bed.id.asc()).all()
 
 
+@app.put(
+    "/beds/{bed_id}/status",
+    response_model=BedOut,
+    tags=["Resources"],
+)
+def update_bed_status(
+    bed_id: str,
+    status_in: BedStatusUpdate,
+    db: Session = Depends(get_db),
+):
+    """
+    Update bed status (AVAILABLE, OCCUPIED, CLEANING).
+    When set back to AVAILABLE, automatically allocates waiting patients.
+    """
+    bed = db.query(Bed).filter(Bed.id == bed_id).first()
+    if not bed:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Bed with ID {bed_id} not found",
+        )
+
+    bed.status = status_in.status
+    db.commit()
+    db.refresh(bed)
+
+    if bed.status == BedStatus.AVAILABLE:
+        allocate_waiting(db)
+        db.refresh(bed)
+
+    return bed
+
+
 @app.get(
     "/doctors",
     response_model=List[DoctorOut],
@@ -332,3 +400,97 @@ def list_beds(db: Session = Depends(get_db)):
 def list_doctors(db: Session = Depends(get_db)):
     """Retrieve list of hospital doctors and availability statuses."""
     return db.query(Doctor).order_by(Doctor.id.asc()).all()
+
+
+@app.put(
+    "/doctors/{doctor_id}/availability",
+    response_model=DoctorOut,
+    tags=["Resources"],
+)
+def update_doctor_availability(
+    doctor_id: int,
+    avail_in: DoctorAvailabilityUpdate,
+    db: Session = Depends(get_db),
+):
+    """
+    Update doctor availability.
+    When set back to True, automatically allocates waiting patients.
+    """
+    doctor = db.query(Doctor).filter(Doctor.id == doctor_id).first()
+    if not doctor:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Doctor with ID {doctor_id} not found",
+        )
+
+    doctor.is_available = avail_in.is_available
+    db.commit()
+    db.refresh(doctor)
+
+    if doctor.is_available:
+        allocate_waiting(db)
+        db.refresh(doctor)
+
+    return doctor
+
+
+@app.get(
+    "/resources/summary",
+    response_model=ResourcesSummary,
+    tags=["Resources"],
+)
+def get_resources_summary(db: Session = Depends(get_db)):
+    """
+    Retrieve live summary of hospital resources: available/occupied/cleaning beds per ward,
+    free ventilators, available doctors with capacity, and count of waiting patients.
+    """
+    all_beds = db.query(Bed).all()
+    wards = [BedWard.ICU.value, BedWard.EMERGENCY.value, BedWard.GENERAL.value]
+    beds_by_ward = {
+        w: WardBedCounts(available=0, occupied=0, cleaning=0, total=0) for w in wards
+    }
+
+    free_ventilators = 0
+    for b in all_beds:
+        ward_key = b.ward.value
+        if ward_key in beds_by_ward:
+            beds_by_ward[ward_key].total += 1
+            if b.status == BedStatus.AVAILABLE:
+                beds_by_ward[ward_key].available += 1
+                if b.has_ventilator:
+                    free_ventilators += 1
+            elif b.status == BedStatus.OCCUPIED:
+                beds_by_ward[ward_key].occupied += 1
+            elif b.status == BedStatus.CLEANING:
+                beds_by_ward[ward_key].cleaning += 1
+
+    all_doctors = db.query(Doctor).all()
+    doctors_available = sum(
+        1 for d in all_doctors if d.is_available and d.active_patients_count < MAX_PATIENTS_PER_DOCTOR
+    )
+
+    patients_waiting = (
+        db.query(Patient).filter(Patient.status == PatientStatus.WAITING).count()
+    )
+
+    return ResourcesSummary(
+        beds_by_ward=beds_by_ward,
+        free_ventilators=free_ventilators,
+        doctors_available=doctors_available,
+        total_doctors=len(all_doctors),
+        patients_waiting=patients_waiting,
+    )
+
+
+@app.post(
+    "/allocate/run",
+    response_model=AllocateRunResponse,
+    tags=["Allocation"],
+)
+def run_manual_allocation(db: Session = Depends(get_db)):
+    """Manually execute waiting queue allocation algorithm and return assigned patient IDs."""
+    assigned_ids = allocate_waiting(db)
+    return AllocateRunResponse(
+        assigned_patient_ids=assigned_ids,
+        count=len(assigned_ids),
+    )

@@ -4,7 +4,7 @@ Defines request validation and response serialization models.
 """
 
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import Dict, List, Literal, Optional
 from pydantic import BaseModel, ConfigDict, Field
 
 from models import BedStatus, BedWard, DoctorSpecialty, PatientStatus
@@ -67,7 +67,25 @@ class VitalsUpdate(VitalsBase):
     pass
 
 
+class BedStatusUpdate(BaseModel):
+    """Schema for updating bed availability or cleaning status."""
+    status: BedStatus = Field(..., description="Target bed status: AVAILABLE, OCCUPIED, or CLEANING")
+
+
+class DoctorAvailabilityUpdate(BaseModel):
+    """Schema for toggling doctor on-duty availability."""
+    is_available: bool = Field(..., description="Doctor availability flag")
+
+
 # --- Response Schemas ---
+
+class AllocationResult(BaseModel):
+    """Result of attempting to allocate bed and doctor resources."""
+    assigned: bool = Field(..., description="True if both bed and doctor were successfully assigned")
+    bed_id: Optional[str] = Field(None, description="Assigned bed identifier, if matched")
+    doctor_id: Optional[int] = Field(None, description="Assigned doctor identifier, if matched")
+    message: str = Field(..., description="Human-readable allocation or waitlist rationale")
+
 
 class PatientOut(BaseModel):
     """Output representation of a patient record."""
@@ -93,14 +111,16 @@ class PatientOut(BaseModel):
 
 
 class PatientCreateResponse(PatientOut):
-    """Response returned upon patient intake including ML model confidence."""
+    """Response returned upon patient intake including ML model confidence and allocation status."""
     confidence: Optional[float] = Field(None, description="Triage model prediction confidence")
+    allocation: Optional[AllocationResult] = Field(None, description="Resource allocation outcome")
 
 
 class VitalsUpdateResponse(PatientOut):
     """Response returned upon updating vitals indicating re-prioritization status."""
     previous_level: Optional[int] = Field(None, description="Urgency level prior to vitals update")
     level_changed: bool = Field(False, description="Whether triage urgency level changed")
+    allocation: Optional[Dict] = Field(None, description="Resource allocation or bed upgrade outcome")
 
 
 class QueuePatientOut(PatientOut):
@@ -138,3 +158,26 @@ class DoctorOut(BaseModel):
     active_patients_count: int
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class WardBedCounts(BaseModel):
+    """Bed count breakdown for a single ward."""
+    available: int = 0
+    occupied: int = 0
+    cleaning: int = 0
+    total: int = 0
+
+
+class ResourcesSummary(BaseModel):
+    """Hospital resource utilization overview."""
+    beds_by_ward: Dict[str, WardBedCounts]
+    free_ventilators: int
+    doctors_available: int
+    total_doctors: int
+    patients_waiting: int
+
+
+class AllocateRunResponse(BaseModel):
+    """Outcome of manually executing waiting queue allocation."""
+    assigned_patient_ids: List[int]
+    count: int
