@@ -60,7 +60,7 @@ export function AuthProvider({ children }) {
 
   /**
    * Check if the current user has at least one of the given roles.
-   * @param {...string} roles - e.g. hasRole('ADMIN', 'NURSE')
+   * @param {...string} roles - e.g. hasRole('NURSE')
    */
   const hasRole = useCallback((...roles) => {
     if (!user) return false;

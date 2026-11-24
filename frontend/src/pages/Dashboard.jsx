@@ -99,8 +99,8 @@ export default function Dashboard() {
           <StatusBar status={status} queue={queue} resources={resources} />
         </div>
 
-        {/* "New patient" for NURSE and ADMIN */}
-        {hasRole('NURSE', 'ADMIN') && (
+        {/* "New patient" for NURSE */}
+        {hasRole('NURSE') && (
           <Link
             to="/intake"
             className="inline-flex items-center gap-1.5 self-start sm:mt-1 text-sm font-semibold bg-blue-600 text-white px-4 py-2 rounded-lg hover:bg-blue-700 transition-colors shadow-sm"

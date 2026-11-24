@@ -20,7 +20,7 @@ def create_alert(
 ) -> Alert:
     """
     Persist an Alert record in the database and publish a real-time notification
-    event to the assigned physician and all connected nurse/admin dashboards.
+    event to the assigned physician and all connected nurse dashboards.
     """
     alert = Alert(
         patient_id=patient.id,
@@ -34,7 +34,7 @@ def create_alert(
     db.commit()
     db.refresh(alert)
 
-    # Publish real-time event to the specified doctor and nurse/admin roles
+    # Publish real-time event to the specified doctor and nurse roles
     alert_payload = {
         "type": "alert",
         "alert": {
@@ -51,15 +51,15 @@ def create_alert(
         "level": level,
         "message": message,
     }
-    publish(alert_payload, doctor_id=doctor_id, roles=["nurse", "admin"])
+    publish(alert_payload, doctor_id=doctor_id, roles=["nurse"])
     return alert
 
 
 def check_and_alert_assignment(db: Session, patient: Patient):
     """
     Evaluate assignment alert rules:
-    - Level 1 or 2 assignment -> CRITICAL alert to assigned doctor & nurses/admins.
-    - Level 1 waitlisted without a bed -> NO BED alert to nurses/admins.
+    - Level 1 or 2 assignment -> CRITICAL alert to assigned doctor and nurses.
+    - Level 1 waitlisted without a bed -> NO BED alert to nurses.
     - Level 3-5 assignments create no alert.
     """
     if patient.status == PatientStatus.ASSIGNED and patient.urgency_level in (1, 2):

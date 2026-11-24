@@ -16,25 +16,17 @@ from sqlalchemy.orm import Session
 from database import SessionLocal, get_db
 from models import User, UserRole
 
-# Secret key configuration: defaults to development key if TRIAGE_SECRET_KEY is not set.
-# ⚠️  WARNING: The fallback key is PUBLIC. Set TRIAGE_SECRET_KEY in your environment
-#    before any production or shared deployment.
-_DEV_SECRET = "dev-secret-key-hospital-triage-change-in-production-only-very-secure"
-SECRET_KEY = os.getenv("TRIAGE_SECRET_KEY", _DEV_SECRET)
+# JWT signing secret must be supplied by the deployment environment.
+# There is deliberately no built-in fallback secret.
+SECRET_KEY = os.getenv("TRIAGE_SECRET_KEY", "").strip()
+if len(SECRET_KEY) < 32:
+    raise RuntimeError(
+        "TRIAGE_SECRET_KEY must be set to a random value of at least 32 characters. "
+        "See backend/.env.example."
+    )
 
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_HOURS = 8
-
-# Print a startup warning when the development fallback key is in use
-if SECRET_KEY == _DEV_SECRET:
-    import sys
-    print(
-        "\n"
-        "  ⚠️  SECURITY WARNING: Using the built-in development SECRET_KEY.\n"
-        "     Set the TRIAGE_SECRET_KEY environment variable before deploying.\n"
-        "     See backend/.env.example for instructions.\n",
-        file=sys.stderr,
-    )
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
@@ -115,6 +107,12 @@ def get_current_user(
             detail="User account is inactive",
             headers={"WWW-Authenticate": "Bearer"},
         )
+    role = user.role.value if hasattr(user.role, "value") else str(user.role)
+    if role not in {UserRole.NURSE.value, UserRole.DOCTOR.value}:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only authorized clinical staff may access this system",
+        )
     return user
 
 
@@ -150,6 +148,8 @@ def decode_token_for_ws(token: str) -> Optional[dict]:
         role = payload.get("role")
         username = payload.get("username")
         if not user_id_str or not role or not username:
+            return None
+        if role not in {UserRole.NURSE.value, UserRole.DOCTOR.value}:
             return None
         return {
             "id": int(user_id_str),

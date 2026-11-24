@@ -1,277 +1,186 @@
-# 🏥 Hospital Triage System
+# Hospital Triage System
 
-> An intelligent, real-time emergency department triage platform — ML-powered urgency scoring, automatic resource allocation, live WebSocket dashboard, and role-based access control.
+An intelligent emergency-department triage decision-support prototype with ML urgency scoring, SHAP reason tags, resource allocation, live WebSocket updates, and role-based access control.
 
-**This is a decision-support prototype built for educational and demonstration purposes. It is NOT a certified medical device. Clinicians make all final triage decisions.**
+> **Medical disclaimer:** This is an educational software prototype, not a certified medical device. It has not been validated with real clinical data and must not be used to make real emergency-care decisions. Clinicians remain responsible for all decisions.
 
----
+## Access policy
 
-## Features
+Only authorized clinical personnel may sign in:
 
-| Feature | Detail |
-|---------|--------|
-| 📋 Digital patient intake | Web form for name, age, gender, vitals, and symptoms |
-| 🤖 ML triage classifier | XGBoost, 95.75 % accuracy, Level 1–5 (ESI-style) |
-| 🏷️ Explainable reason tags | SHAP values → human-readable tags on every patient card |
-| 🛏️ Automatic resource matching | ICU / Emergency / General bed + doctor assignment in < 1 s |
-| 📡 Live dashboard | WebSocket push: queue, beds, doctors, all synced in real time |
-| 🚨 Instant alerts | Level-1 admission and escalation alerts dispatched to doctors |
-| 🔄 Live re-prioritisation | Vitals update re-runs the ML model; queue re-sorts automatically |
-| 🔐 Role-based access | NURSE · DOCTOR · ADMIN permission matrix enforced at every endpoint |
-| 📜 Audit log | Every state change recorded; global log for ADMIN/DOCTOR |
-| 📊 Admin panel | Manage beds, doctors, shifts, users; activity log |
-| 📈 Analytics | Triage distribution, occupancy, wait times by level, timeline charts |
+- `NURSE`
+- `DOCTOR`
 
----
+There is no public registration, no ADMIN sign-in, no built-in demo account, and no default password. User accounts are provisioned from the trusted backend console. ADMIN endpoints and the Admin UI have been removed from the application.
 
-## Architecture
+## Quick start (Windows PowerShell)
 
-```mermaid
-flowchart LR
-    FE["React Frontend\nVite + Tailwind"]
-    BE["FastAPI Backend\n(Uvicorn ASGI)"]
-    ML["XGBoost + SHAP\nml/predict.py"]
-    DB[("SQLite\ntriage.db")]
-    ALLOC["Allocation Engine\nallocation.py"]
-    ALERTS["Alert Dispatcher\nalerts.py"]
-    ANALYTICS["Analytics\nanalytics.py"]
-    WS["WebSocket\nConnectionManager"]
+### 1. Configure the JWT signing secret
 
-    FE -- "REST /api/*" --> BE
-    FE -- "WS /ws?token=" --> WS
-    BE --> ML
-    BE --> ALLOC
-    BE --> ALERTS
-    BE --> ANALYTICS
-    BE --> DB
-    WS --> FE
-    ALLOC --> DB
-    ALERTS --> WS
-    ANALYTICS --> DB
+Run this once in the PowerShell terminal that will run the backend:
+
+```powershell
+$env:TRIAGE_SECRET_KEY = python -c "import secrets; print(secrets.token_urlsafe(48))"
 ```
 
----
+Keep this value private. Generate and store a persistent secret securely for deployments; do not commit it to Git. The backend refuses to start without a secret of at least 32 characters.
 
-## Tech Stack
+### 2. Initialize the database and install backend dependencies
 
-| Layer | Technology |
-|-------|-----------|
-| Frontend | Vite 6, React 18, Tailwind CSS v4, recharts, lucide-react, react-router-dom |
-| Backend | FastAPI 0.165, SQLAlchemy 2, Uvicorn, Python 3.11+ |
-| Auth | PyJWT (HS256), bcrypt, OAuth2PasswordBearer |
-| ML | XGBoost 3.4, scikit-learn 1.6, SHAP 0.54 |
-| Database | SQLite (dev) – swap to PostgreSQL for production |
-| Testing | pytest (backend), Vitest (frontend), httpx (E2E smoke test) |
-
----
-
-## Quick Start
-
-### Prerequisites
-- Python 3.11+
-- Node.js 18+
-
-### macOS / Linux
-```bash
-git clone <repo-url>
-cd hospital-triage
-chmod +x scripts/start.sh
-./scripts/start.sh
-```
-
-### Windows
-```bat
-scripts\start.bat
-```
-
-The startup script will:
-1. Create `backend/.venv` and install Python dependencies
-2. Run `npm install` in `frontend/` if needed
-3. Seed `triage.db` if it doesn't exist
-4. Start the FastAPI backend on port 8000 and Vite on port 5173
-
-### Manual startup
-```bash
-# Terminal 1 – backend
+```powershell
 cd backend
-python -m venv .venv && .venv/bin/pip install -r requirements.txt
-.venv/bin/python seed.py          # first time only
-.venv/bin/uvicorn main:app --reload
+python -m venv .venv
+.venv\\Scripts\\Activate.ps1
+pip install -r requirements.txt
+```
 
-# Terminal 2 – frontend
+If you are upgrading and want to keep your existing account/patient records, back up your old `backend\\triage.db` and copy it into this project's `backend` folder **before** running the next commands. For a fresh installation, do not copy an old database.
+
+```powershell
+python seed.py
+```
+
+`seed.py` creates the database schema and removes legacy demo login accounts. It does **not** create fictional doctors, nurses, beds, shifts, or patients.
+
+### 3. Migrate an existing demo database (upgrades only)
+
+If you copied an older database from the previous project version, run:
+
+```powershell
+python migrate_demo_resources.py
+```
+
+This migration:
+- Relinks a doctor account to a matching doctor resource record when its display name differs from the old sample doctor.
+- Removes only unused known sample doctor and bed records.
+- Preserves patient history and any resource still referenced by patient, alert, or staff records.
+
+Back up `backend\\triage.db` before running it. Review the migration output. For a brand-new database, this step is safe to skip.
+
+### 4. Create real staff accounts
+
+```powershell
+python create_staff.py
+```
+
+Choose `NURSE` or `DOCTOR`. For a doctor, the script creates a matching doctor resource record using the entered full name and selected specialty. It links the login account to that newly created record automatically. There is no need to select an unrelated doctor ID.
+
+Passwords must be at least 12 characters and are stored as password hashes.
+
+### 5. Add real hospital beds
+
+Run once for each actual bed:
+
+```powershell
+python create_bed.py
+```
+
+Enter the actual bed identifier, ward, and whether it has a ventilator. The application starts with zero beds until actual hospital resources are provisioned.
+
+### 6. Start the backend
+
+```powershell
+python -m uvicorn main:app --reload
+```
+
+Keep this terminal open.
+
+### 7. Start the frontend
+
+Open a second terminal:
+
+```powershell
 cd frontend
 npm install
 npm run dev
 ```
 
-**Open:** http://localhost:5173
+Open http://localhost:5173.
 
----
+## macOS / Linux
 
-## Demo Accounts
-
-All accounts use password `demo123`.
-
-| Username | Role | Access |
-|----------|------|--------|
-| `admin` | ADMIN | Full access: all endpoints, analytics, admin panel |
-| `nurse1` | NURSE | Patient intake, queue, discharge, alerts |
-| `nurse2` | NURSE | Same as nurse1 |
-| `dr1` – `dr5` | DOCTOR | Dashboard, own alerts, vitals update, discharge |
-
----
-
-## Run Tests
+Configure the secret, install dependencies, initialize the database, create staff and beds, then start the backend:
 
 ```bash
-# Backend pytest suite
-cd backend && .venv/bin/pytest tests/ -v
-
-# Frontend unit tests (109 tests)
-cd frontend && npm test
-
-# Frontend production build
-cd frontend && npm run build
-
-# E2E smoke test (requires running server)
-cd backend && .venv/bin/python ../tests_e2e/smoke_test.py
-
-# Or use Make:
-make test            # backend + frontend
-make test-smoke      # E2E smoke test
-```
-
----
-
-## Run the Demo
-
-See **[docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md)** for the full 5-minute scripted demo.
-
-Quick version:
-```bash
+export TRIAGE_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_urlsafe(48))')"
 cd backend
-python demo.py reset             # Rebuild DB, seed users + beds
-python demo.py scenario          # Run scripted patient story (narrated)
-python demo.py scenario --speed fast   # Same, but faster
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python seed.py
+python create_staff.py
+python create_bed.py
+uvicorn main:app --reload
 ```
 
----
+In a second terminal, run `cd frontend && npm install && npm run dev`.
 
-## Screenshots
+## Application features
 
-> Place screenshots in `docs/screenshots/` after running the demo. See [docs/screenshots/README.md](docs/screenshots/README.md) for the full list.
+| Feature | Detail |
+|---|---|
+| Patient intake | Actual patient demographics, symptoms, and vitals |
+| ML triage | XGBoost urgency classification, Levels 1–5 |
+| Explainability | SHAP-derived human-readable reason tags |
+| Resource allocation | Match waiting patients to configured beds and available doctors |
+| Live dashboard | WebSocket updates for queue and resources |
+| Alerts | Clinical alerts and escalation notifications |
+| Re-prioritization | Re-run triage when patient vitals change |
+| Access control | Backend-enforced NURSE and DOCTOR permissions |
+| Audit log | Patient-related state changes |
+| Analytics | Triage distribution, occupancy, wait times, timeline |
 
-![Dashboard](docs/screenshots/dashboard.png)
-![Intake Form](docs/screenshots/intake.png)
-![Analytics](docs/screenshots/analytics.png)
-![Admin Panel](docs/screenshots/admin-beds.png)
+## Project structure
 
----
-
-## Project Structure
-
-```
+```text
 hospital-triage/
-├── backend/                  FastAPI application
-│   ├── main.py               API routes, WebSocket endpoint, lifespan
-│   ├── models.py             SQLAlchemy ORM models
-│   ├── schemas.py            Pydantic request/response schemas
-│   ├── auth.py               JWT auth, bcrypt, RBAC dependencies
-│   ├── triage_service.py     ML prediction wrapper
-│   ├── allocation.py         Bed + doctor assignment engine
-│   ├── alerts.py             Alert generation and dispatch
-│   ├── realtime.py           WebSocket ConnectionManager + publish()
-│   ├── analytics.py          Analytics API router
-│   ├── admin_routes.py       Admin CRUD API router
-│   ├── database.py           SQLAlchemy engine + session
-│   ├── seed.py               Initial beds, doctors, users, shifts
-│   ├── demo.py               Demo tooling (reset + scenario)
-│   ├── simulate.py           Random patient load simulator
-│   ├── requirements.txt      Python dependencies (pinned)
-│   ├── .env.example          Environment variable reference
-│   └── tests/                pytest test suite
-│
-├── frontend/                 React SPA
-│   ├── src/
-│   │   ├── pages/            Login, Intake, Dashboard, Analytics,
-│   │   │                     History, Alerts, Admin, PatientDetail
-│   │   ├── components/       Layout, AlertToasts, dashboard/, admin/, ui/
-│   │   ├── context/          AuthContext, LiveContext (WebSocket)
-│   │   ├── hooks/            useLiveSocket, useDashboardData
-│   │   └── lib/              api.js, urgency.jsx, validation.js,
-│   │                         analyticsLogic.js, shiftLogic.js
-│   └── README.md             Frontend-specific docs
-│
-├── ml/                       ML training pipeline
-│   ├── predict.py            Inference + SHAP explanations
-│   ├── model/                model.json, features.json, metrics.json
-│   └── notebooks/            Training notebook
-│
+├── backend/
+│   ├── main.py
+│   ├── models.py
+│   ├── schemas.py
+│   ├── auth.py
+│   ├── database.py
+│   ├── seed.py
+│   ├── create_staff.py
+│   ├── create_bed.py
+│   ├── migrate_demo_resources.py
+│   ├── triage_service.py
+│   ├── allocation.py
+│   ├── alerts.py
+│   ├── realtime.py
+│   ├── analytics.py
+│   └── tests/
+├── frontend/
+│   └── src/
+├── ml/
+│   ├── predict.py
+│   └── model/
 ├── tests_e2e/
-│   └── smoke_test.py         End-to-end smoke test (requires live server)
-│
 ├── docs/
-│   ├── MODEL_CARD.md         ML model documentation
-│   ├── DEMO_SCRIPT.md        5-minute demo script
-│   ├── PRESENTATION_OUTLINE.md  10-slide presentation outline
-│   └── screenshots/          Screenshot folder (add after demo)
-│
-├── scripts/
-│   ├── start.sh              One-command startup (macOS/Linux)
-│   └── start.bat             One-command startup (Windows)
-│
-├── Makefile                  make start / test / reset-demo / scenario
-└── README.md                 This file
+└── scripts/
 ```
 
----
+## Tests
 
-## API Overview
+```powershell
+# Backend
+cd backend
+python -m pytest tests/ -v
 
-Full API documentation: **[backend/README.md](backend/README.md)** or visit http://127.0.0.1:8000/docs when the server is running.
+# Frontend
+cd ..\frontend
+npm test
+npm run build
+```
 
-Key endpoints:
+## API documentation
 
-| Method | Path | Auth | Description |
-|--------|------|------|-------------|
-| GET | `/health` | Public | Health check (`status`, `db`, `model_loaded`) |
-| POST | `/auth/login` | Public | OAuth2 form login → JWT |
-| POST | `/patients` | NURSE, ADMIN | Intake patient, run ML triage |
-| GET | `/queue` | All | Waiting patients, priority-sorted |
-| PUT | `/patients/{id}/vitals` | All | Update vitals, re-run triage |
-| PUT | `/patients/{id}/discharge` | All | Discharge, free bed + doctor |
-| GET | `/alerts` | All* | Clinical alerts (*DOCTOR scoped to own) |
-| WS | `/ws?token=` | All | Live event stream |
-| GET | `/analytics/summary` | All | KPI summary |
-| GET | `/admin/beds` | ADMIN | Manage beds |
+When the backend is running, visit http://127.0.0.1:8000/docs.
 
----
+## Current limitations
 
-## Limitations & Future Work
-
-**Current limitations:**
-- Trained on synthetic data only – not validated with real clinical data
-- Simple keyword matching for symptom features
-- SQLite not suitable for concurrent production load
-- No real EHR integration
-
-**Future work:**
-- Real EHR integration (HL7 FHIR)
-- Real patient data with IRB approval and clinical validation
-- PostgreSQL + Docker Compose for production deployment
-- SMS/pager alerts via Twilio
-- Audit log CSV/PDF export for regulatory compliance
-- Offline support and mobile-responsive layout improvements
-
----
-
-## Medical Disclaimer
-
-This system is a **software engineering prototype** built for educational and demonstration purposes.
-
-- It is **NOT** a certified medical device.
-- It has **NOT** been validated with real patient data.
-- It is **NOT** intended for use in a real emergency department.
-- **Clinicians always make the final triage decision.**
-
-For real triage software, refer to certified clinical decision-support systems (e.g., Cerner FirstNet, Epic).
+- The ML model was trained on synthetic data and has not been clinically validated.
+- Symptom feature extraction includes simple keyword matching.
+- SQLite is intended for local development, not concurrent production use.
+- No real EHR integration is included.
+- This prototype is not suitable for real patient care.

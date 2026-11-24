@@ -212,20 +212,6 @@ class UserOut(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
-class UserCreate(BaseModel):
-    """Schema for registering or provisioning a new user."""
-    username: str = Field(..., min_length=3, max_length=50, description="Unique login username")
-    password: str = Field(..., min_length=6, description="Plaintext initial password (hashed on storage)")
-    full_name: str = Field(..., min_length=1, max_length=150, description="User's full display name")
-    role: UserRole = Field(..., description="Authorization role: NURSE, DOCTOR, or ADMIN")
-    doctor_id: Optional[int] = Field(None, description="Linked doctor ID (required for DOCTOR role)")
-
-
-class UserActiveUpdate(BaseModel):
-    """Schema for toggling user account active status."""
-    is_active: bool = Field(..., description="Active status flag")
-
-
 class LoginResponse(BaseModel):
     """OAuth2 access token response."""
     access_token: str
@@ -234,77 +220,4 @@ class LoginResponse(BaseModel):
 
 
 # --- Step 7: Admin & Analytics Schemas ---
-
-class BedCreate(BaseModel):
-    """Schema for creating a new hospital bed."""
-    id: str = Field(..., min_length=1, max_length=20, description="Unique bed identifier, e.g. ICU-05")
-    ward: BedWard = Field(..., description="Ward classification: ICU, EMERGENCY, or GENERAL")
-    has_ventilator: Optional[bool] = Field(None, description="Ventilator equipment (defaults True for ICU)")
-
-
-class BedUpdate(BaseModel):
-    """Schema for updating bed ward or ventilator status (occupied bed rejected)."""
-    ward: Optional[BedWard] = None
-    has_ventilator: Optional[bool] = None
-
-
-class DoctorCreate(BaseModel):
-    """Schema for creating a new hospital doctor."""
-    name: str = Field(..., min_length=1, max_length=150, description="Doctor's full name")
-    specialty: DoctorSpecialty = Field(..., description="Medical specialty")
-    is_available: bool = Field(True, description="Initial availability flag")
-
-
-class DoctorUpdate(BaseModel):
-    """Schema for updating doctor properties."""
-    name: Optional[str] = Field(None, min_length=1, max_length=150)
-    specialty: Optional[DoctorSpecialty] = None
-    is_available: Optional[bool] = None
-
-
-class DoctorOutWithWarning(BaseModel):
-    """Doctor response that may include an optional warning message."""
-    id: int
-    name: str
-    specialty: DoctorSpecialty
-    is_available: bool
-    active_patients_count: int
-    warning: Optional[str] = None
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ShiftCreate(BaseModel):
-    """Schema for scheduling a doctor shift."""
-    doctor_id: int = Field(..., description="Doctor to schedule")
-    start_time: datetime = Field(..., description="Shift start (UTC datetime)")
-    end_time: datetime = Field(..., description="Shift end (UTC datetime)")
-
-
-class ShiftOut(BaseModel):
-    """Output representation of a scheduled shift."""
-    id: int
-    doctor_id: int
-    start_time: datetime
-    end_time: datetime
-    created_at: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class AdminLogOut(BaseModel):
-    """Output representation of an admin action log entry."""
-    id: int
-    user_id: Optional[int] = None
-    action: str
-    timestamp: datetime
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class ShiftApplyResult(BaseModel):
-    """Result of applying shift availability to a single doctor."""
-    doctor_id: int
-    name: str
-    changed_to: bool  # The new is_available value that was applied
 

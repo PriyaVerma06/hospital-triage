@@ -20,7 +20,6 @@ function RoleBadge({ role }) {
   const colours = {
     NURSE:  'bg-teal-100 text-teal-800',
     DOCTOR: 'bg-purple-100 text-purple-800',
-    ADMIN:  'bg-red-100 text-red-800',
   };
   return (
     <span className={`text-xs font-semibold px-2 py-0.5 rounded-full ${colours[role] ?? 'bg-gray-100 text-gray-700'}`}>
@@ -68,16 +67,13 @@ export default function Layout() {
 
             {/* Nav links */}
             <div className="flex items-center gap-1 overflow-x-auto">
-              {hasRole('NURSE', 'ADMIN') && (
+              {hasRole('NURSE') && (
                 <NavLink to="/intake" className={navLinkClass}>Intake</NavLink>
               )}
               <NavLink to="/dashboard"  className={navLinkClass}>Dashboard</NavLink>
               <NavLink to="/analytics"  className={navLinkClass}>Analytics</NavLink>
               <NavLink to="/history"    className={navLinkClass}>History</NavLink>
               <NavLink to="/alerts"     className={navLinkClass}>Alerts</NavLink>
-              {hasRole('ADMIN') && (
-                <NavLink to="/admin" className={navLinkClass}>Admin</NavLink>
-              )}
             </div>
 
             {/* Right: bell + user + logout */}

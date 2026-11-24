@@ -19,6 +19,7 @@ import argparse
 import asyncio
 import json
 import sys
+import os
 import time
 from typing import Optional
 
@@ -108,14 +109,19 @@ def run(api_url: str):
         sys.exit(1)
 
     # ── Step 2: Login for nurse, doctor, admin ──────────────────────────────
-    nurse_token = _login(client, "nurse1", "demo123")
-    _assert(nurse_token is not None, "Login as nurse1")
-
-    doctor_token = _login(client, "dr1", "demo123")
-    _assert(doctor_token is not None, "Login as dr1")
-
-    admin_token = _login(client, "admin", "demo123")
-    _assert(admin_token is not None, "Login as admin")
+    nurse_username = os.getenv("TRIAGE_TEST_NURSE_USERNAME", "")
+    nurse_password = os.getenv("TRIAGE_TEST_NURSE_PASSWORD", "")
+    doctor_username = os.getenv("TRIAGE_TEST_DOCTOR_USERNAME", "")
+    doctor_password = os.getenv("TRIAGE_TEST_DOCTOR_PASSWORD", "")
+    if not all([nurse_username, nurse_password, doctor_username, doctor_password]):
+        raise SystemExit(
+            "Set TRIAGE_TEST_NURSE_USERNAME/PASSWORD and TRIAGE_TEST_DOCTOR_USERNAME/PASSWORD "
+            "to provisioned clinical accounts before running the E2E smoke test."
+        )
+    nurse_token = _login(client, nurse_username, nurse_password)
+    _assert(nurse_token is not None, "Login as provisioned nurse")
+    doctor_token = _login(client, doctor_username, doctor_password)
+    _assert(doctor_token is not None, "Login as provisioned doctor")
 
     if not all([nurse_token, doctor_token, admin_token]):
         print("\n  ❌  Auth failures – aborting remaining steps.")
@@ -238,13 +244,13 @@ def run(api_url: str):
                 _assert(key in body, f"{endpoint} has '{key}' field", str(list(body.keys())[:6]))
                 break  # One key assertion per endpoint is enough for a smoke test
 
-    # ── Step 9: RBAC – nurse gets 403 on admin endpoint ─────────────────────
+    # ── Step 9: Administrative routes are not part of the clinical API ───────
     resp = client.get("/admin/logs", headers=_headers(nurse_token))
-    _assert(resp.status_code == 403, "NURSE → 403 on GET /admin/logs", f"HTTP {resp.status_code}")
+    _assert(resp.status_code == 404, "GET /admin/logs is not exposed", f"HTTP {resp.status_code}")
 
     resp = client.post("/admin/beds", json={"id": "TEST-01", "ward": "GENERAL", "has_ventilator": False},
                        headers=_headers(nurse_token))
-    _assert(resp.status_code == 403, "NURSE → 403 on POST /admin/beds", f"HTTP {resp.status_code}")
+    _assert(resp.status_code == 404, "POST /admin/beds is not exposed", f"HTTP {resp.status_code}")
 
     # ── Summary ─────────────────────────────────────────────────────────────
     client.close()

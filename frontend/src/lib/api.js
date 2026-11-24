@@ -202,7 +202,7 @@ export async function dischargePatient(id) {
 }
 
 // ---------------------------------------------------------------------------
-// Global audit log (ADMIN + DOCTOR)
+// Global clinical audit log
 // ---------------------------------------------------------------------------
 
 /** GET /audit with optional pagination and patient_id filter */
@@ -235,83 +235,7 @@ export async function getTimeline(hours = 24) {
   return request(`/analytics/timeline?hours=${hours}`);
 }
 
-// ---------------------------------------------------------------------------
-// Admin — Beds
-// ---------------------------------------------------------------------------
-
-export async function adminCreateBed(data) {
-  return request('/admin/beds', { method: 'POST', body: JSON.stringify(data) });
-}
-
-export async function adminUpdateBed(id, data) {
-  return request(`/admin/beds/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-}
-
-export async function adminDeleteBed(id) {
-  return request(`/admin/beds/${id}`, { method: 'DELETE' });
-}
-
+// Update a bed's operational status (NURSE endpoint).
 export async function updateBedStatus(id, status) {
   return request(`/beds/${id}/status`, { method: 'PUT', body: JSON.stringify({ status }) });
-}
-
-// ---------------------------------------------------------------------------
-// Admin — Doctors
-// ---------------------------------------------------------------------------
-
-export async function adminCreateDoctor(data) {
-  return request('/admin/doctors', { method: 'POST', body: JSON.stringify(data) });
-}
-
-export async function adminUpdateDoctor(id, data) {
-  return request(`/admin/doctors/${id}`, { method: 'PUT', body: JSON.stringify(data) });
-}
-
-export async function adminDeleteDoctor(id) {
-  return request(`/admin/doctors/${id}`, { method: 'DELETE' });
-}
-
-// ---------------------------------------------------------------------------
-// Admin — Shifts
-// ---------------------------------------------------------------------------
-
-export async function getShifts(params = {}) {
-  const qs = new URLSearchParams(params).toString();
-  return request(`/admin/shifts${qs ? '?' + qs : ''}`);
-}
-
-export async function adminCreateShift(data) {
-  return request('/admin/shifts', { method: 'POST', body: JSON.stringify(data) });
-}
-
-export async function adminDeleteShift(id) {
-  return request(`/admin/shifts/${id}`, { method: 'DELETE' });
-}
-
-export async function applyShifts() {
-  return request('/admin/shifts/apply', { method: 'POST' });
-}
-
-// ---------------------------------------------------------------------------
-// Admin — Logs
-// ---------------------------------------------------------------------------
-
-export async function getAdminLogs(limit = 50) {
-  return request(`/admin/logs?limit=${limit}`);
-}
-
-// ---------------------------------------------------------------------------
-// Users
-// ---------------------------------------------------------------------------
-
-export async function getUsers() {
-  return request('/users');
-}
-
-export async function createUser(data) {
-  return request('/users', { method: 'POST', body: JSON.stringify(data) });
-}
-
-export async function setUserActive(id, is_active) {
-  return request(`/users/${id}/active`, { method: 'PUT', body: JSON.stringify({ is_active }) });
 }

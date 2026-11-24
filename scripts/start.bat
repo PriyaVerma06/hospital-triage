@@ -40,6 +40,16 @@ for /f "tokens=2" %%v in ('python --version 2^>^&1') do set PY_VER=%%v
 for /f %%v in ('node --version') do set NODE_VER=%%v
 echo [triage] Python %PY_VER% ^| Node %NODE_VER%
 
+REM ── Require JWT secret ───────────────────────────────────────────────────
+if "%TRIAGE_SECRET_KEY%"=="" (
+    echo [ERROR] Set TRIAGE_SECRET_KEY to a random value of at least 32 characters.
+    exit /b 1
+)
+if not "%TRIAGE_SECRET_KEY:~31,1%"=="" goto secret_ok
+echo [ERROR] TRIAGE_SECRET_KEY must be at least 32 characters.
+exit /b 1
+:secret_ok
+
 REM ── Backend: virtual environment ──────────────────────────────────────────
 if not exist "%BACKEND_DIR%\.venv" (
     echo [triage] Creating Python virtual environment ...
@@ -52,13 +62,12 @@ set "PIP=%BACKEND_DIR%\.venv\Scripts\pip.exe"
 echo [triage] Checking Python dependencies ...
 "%PIP%" install -q -r "%BACKEND_DIR%\requirements.txt"
 
-REM ── Backend: seed database if missing ─────────────────────────────────────
-if not exist "%BACKEND_DIR%\triage.db" (
-    echo [triage] No triage.db found - seeding initial data ...
-    pushd "%BACKEND_DIR%"
-    "%PYTHON%" seed.py
-    popd
-)
+REM ── Backend: initialize schema (no sample hospital data is inserted) ─────
+echo [triage] Initializing database schema ...
+pushd "%BACKEND_DIR%"
+"%PYTHON%" seed.py
+if errorlevel 1 exit /b 1
+popd
 
 REM ── Frontend: install node_modules if missing ─────────────────────────────
 if not exist "%FRONTEND_DIR%\node_modules" (
@@ -78,10 +87,7 @@ echo   Backend  -^>  http://127.0.0.1:8000
 echo   Frontend -^>  http://localhost:5173
 echo   API Docs -^>  http://127.0.0.1:8000/docs
 echo.
-echo   Demo accounts (password: demo123):
-echo     admin    - full access
-echo     nurse1   - patient intake and queue
-echo     dr1-dr5  - doctor dashboard and alerts
+echo   Sign-in is restricted to provisioned clinical staff (NURSE / DOCTOR).
 echo.
 echo   Close this window (or Ctrl+C) to stop both services.
 echo ================================================================

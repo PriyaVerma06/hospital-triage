@@ -26,3 +26,13 @@ dist/
 # ML artefacts (keep model.json but ignore large generated files)
 ml/model/*.pkl
 
+
+# Python environments and cache
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+
+# Additional environment files
+.env.*
+!.env.example

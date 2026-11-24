@@ -1,7 +1,7 @@
 """
 Analytics API for the hospital triage system.
 Provides aggregated metrics for administrative dashboards and clinical overviews.
-All endpoints require ADMIN, DOCTOR, or NURSE role.
+All endpoints require an authenticated NURSE or DOCTOR role.
 All endpoints accept ?hours=N (default 24, max 720) to scope the time window.
 """
 
@@ -39,7 +39,7 @@ def _safe_div(numerator: float, denominator: float) -> float:
 @router.get("/summary")
 def get_summary(
     hours: int = Query(24, ge=1, le=720, description="Time window in hours"),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.DOCTOR, UserRole.NURSE)),
+    current_user: User = Depends(require_roles(UserRole.DOCTOR, UserRole.NURSE)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
@@ -107,7 +107,7 @@ def get_summary(
 @router.get("/triage-distribution")
 def get_triage_distribution(
     hours: int = Query(24, ge=1, le=720),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.DOCTOR, UserRole.NURSE)),
+    current_user: User = Depends(require_roles(UserRole.DOCTOR, UserRole.NURSE)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
@@ -141,7 +141,7 @@ def get_triage_distribution(
 
 @router.get("/occupancy")
 def get_occupancy(
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.DOCTOR, UserRole.NURSE)),
+    current_user: User = Depends(require_roles(UserRole.DOCTOR, UserRole.NURSE)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
@@ -190,7 +190,7 @@ def get_occupancy(
 @router.get("/wait-by-level")
 def get_wait_by_level(
     hours: int = Query(24, ge=1, le=720),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.DOCTOR, UserRole.NURSE)),
+    current_user: User = Depends(require_roles(UserRole.DOCTOR, UserRole.NURSE)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """
@@ -232,7 +232,7 @@ def get_wait_by_level(
 @router.get("/timeline")
 def get_timeline(
     hours: int = Query(24, ge=1, le=720),
-    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.DOCTOR, UserRole.NURSE)),
+    current_user: User = Depends(require_roles(UserRole.DOCTOR, UserRole.NURSE)),
     db: Session = Depends(get_db),
 ) -> Dict[str, Any]:
     """

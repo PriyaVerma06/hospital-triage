@@ -10,7 +10,7 @@
  *  - Blur + submit validation matching backend ranges
  *  - Soft danger warnings as the nurse types
  *  - Enter moves to next field
- *  - "Fill sample patient" dropdown for demos
+ *  - actual patient data entry only
  *  - On success: colour-coded result card with allocation info
  *  - 422 field errors mapped onto fields; other errors as banner
  */
@@ -19,28 +19,7 @@ import { Link } from 'react-router-dom';
 import { createPatient } from '../lib/api.js';
 import { validateField, validateForm, softWarning } from '../lib/validation.js';
 import { LevelBadge } from '../lib/urgency.jsx';
-import { ChevronDown, AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
-
-// ---------------------------------------------------------------------------
-// Sample patients for the demo dropdown
-// ---------------------------------------------------------------------------
-const SAMPLES = {
-  Critical: {
-    name: 'Alice Critical', age: 65, gender: 'F',
-    symptoms: 'unconscious, not breathing, severe bleeding',
-    sbp: 70, dbp: 40, hr: 150, spo2: 82, temp: 38.5, rr: 35,
-  },
-  Serious: {
-    name: 'Bob Serious', age: 52, gender: 'M',
-    symptoms: 'chest pain, difficulty breathing',
-    sbp: 160, dbp: 95, hr: 115, spo2: 91, temp: 37.2, rr: 24,
-  },
-  Mild: {
-    name: 'Carol Mild', age: 30, gender: 'F',
-    symptoms: 'headache, mild fever',
-    sbp: 125, dbp: 80, hr: 82, spo2: 98, temp: 38.1, rr: 17,
-  },
-};
+import { AlertTriangle, CheckCircle, Loader2 } from 'lucide-react';
 
 // Quick-pick symptom chips
 const SYMPTOM_CHIPS = [
@@ -131,7 +110,6 @@ export default function Intake() {
   const [submitting, setSubmitting] = useState(false);
   const [banner, setBanner]   = useState('');   // server-level error banner
   const [result, setResult]   = useState(null); // successful intake response
-  const [sampleOpen, setSampleOpen] = useState(false);
 
   // Refs for Enter-to-advance
   const fieldRefs = useRef({});
@@ -166,16 +144,6 @@ export default function Intake() {
       const sep = f.symptoms && !f.symptoms.endsWith(', ') ? ', ' : '';
       return { ...f, symptoms: f.symptoms + sep + chip.toLowerCase() };
     });
-  }
-
-  // Fill a sample patient for demo
-  function fillSample(key) {
-    setForm(SAMPLES[key]);
-    setErrors({});
-    setTouched({});
-    setSampleOpen(false);
-    setBanner('');
-    setResult(null);
   }
 
   // Reset to blank form
@@ -295,29 +263,6 @@ export default function Intake() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-gray-800">Patient Intake</h1>
 
-        {/* Sample patient dropdown */}
-        <div className="relative">
-          <button
-            type="button"
-            onClick={() => setSampleOpen((o) => !o)}
-            className="flex items-center gap-1 text-sm border border-gray-300 rounded-lg px-3 py-1.5 hover:bg-gray-50 text-gray-600"
-          >
-            Fill sample <ChevronDown className="w-3 h-3" />
-          </button>
-          {sampleOpen && (
-            <div className="absolute right-0 mt-1 w-36 bg-white border border-gray-200 rounded-lg shadow-lg z-10">
-              {Object.keys(SAMPLES).map((key) => (
-                <button
-                  key={key}
-                  onClick={() => fillSample(key)}
-                  className="block w-full text-left px-4 py-2 text-sm hover:bg-gray-50 text-gray-700"
-                >
-                  {key}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
       </div>
 
       {/* Server error banner */}

@@ -1,5 +1,5 @@
 /**
- * History page — Patients list + global Audit log (ADMIN/DOCTOR only).
+ * History page — Patients list + global Audit log (clinical staff only).
  */
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useNavigate, useSearchParams, Link } from 'react-router-dom';
@@ -220,7 +220,7 @@ function AuditTab() {
 // ---- Page ----------------------------------------------------------------
 export default function History() {
   const { hasRole } = useAuth();
-  const canSeeAudit = hasRole('ADMIN', 'DOCTOR');
+  const canSeeAudit = hasRole('DOCTOR', 'NURSE');
   const [tab, setTab] = useState('patients');
 
   const tabs = [
