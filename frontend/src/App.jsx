@@ -4,10 +4,9 @@
  *
  * Routes added in Step 10:
  *   /analytics  — all roles
- *   /history    — all roles (Audit tab inside is ADMIN+DOCTOR only)
+ *   /history    — authorized clinical staff
  *   /alerts     — all roles
- *   /admin      — ADMIN only
- */
+  */
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { AuthProvider, useAuth } from './context/AuthContext.jsx';
 import { LiveProvider } from './context/LiveContext.jsx';
@@ -19,7 +18,6 @@ import Dashboard   from './pages/Dashboard.jsx';
 import Analytics   from './pages/Analytics.jsx';
 import History     from './pages/History.jsx';
 import Alerts      from './pages/Alerts.jsx';
-import Admin       from './pages/Admin.jsx';
 import NotFound    from './pages/NotFound.jsx';
 
 function ProtectedRoute({ children, roles }) {
@@ -70,26 +68,24 @@ function AppRoutes() {
         <Route index element={<RootRedirect />} />
 
         <Route path="/intake"
-          element={<ProtectedRoute roles={['NURSE', 'ADMIN']}><Intake /></ProtectedRoute>} />
+          element={<ProtectedRoute roles={['NURSE']}><Intake /></ProtectedRoute>} />
 
         <Route path="/patients/:id"
-          element={<ProtectedRoute roles={['NURSE', 'DOCTOR', 'ADMIN']}><PatientDetail /></ProtectedRoute>} />
+          element={<ProtectedRoute roles={['NURSE', 'DOCTOR']}><PatientDetail /></ProtectedRoute>} />
 
         <Route path="/dashboard"
-          element={<ProtectedRoute roles={['NURSE', 'DOCTOR', 'ADMIN']}><Dashboard /></ProtectedRoute>} />
+          element={<ProtectedRoute roles={['NURSE', 'DOCTOR']}><Dashboard /></ProtectedRoute>} />
 
         {/* Step 10 routes */}
         <Route path="/analytics"
-          element={<ProtectedRoute roles={['NURSE', 'DOCTOR', 'ADMIN']}><Analytics /></ProtectedRoute>} />
+          element={<ProtectedRoute roles={['NURSE', 'DOCTOR']}><Analytics /></ProtectedRoute>} />
 
         <Route path="/history"
-          element={<ProtectedRoute roles={['NURSE', 'DOCTOR', 'ADMIN']}><History /></ProtectedRoute>} />
+          element={<ProtectedRoute roles={['NURSE', 'DOCTOR']}><History /></ProtectedRoute>} />
 
         <Route path="/alerts"
-          element={<ProtectedRoute roles={['NURSE', 'DOCTOR', 'ADMIN']}><Alerts /></ProtectedRoute>} />
+          element={<ProtectedRoute roles={['NURSE', 'DOCTOR']}><Alerts /></ProtectedRoute>} />
 
-        <Route path="/admin"
-          element={<ProtectedRoute roles={['ADMIN']}><Admin /></ProtectedRoute>} />
       </Route>
 
       {/* 404 */}

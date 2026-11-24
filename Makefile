@@ -1,39 +1,35 @@
-# Makefile – Hospital Triage System shortcuts
-# Usage: make <target>
+# Hospital Triage System developer commands
 
-.PHONY: start reset-demo scenario test test-backend test-frontend test-smoke help
+.PHONY: start init-db create-staff create-bed migrate-demo-data test test-backend test-frontend test-smoke build help
 
-# ── Startup ──────────────────────────────────────────────────────────────────
-start:                        ## Start backend + frontend together (macOS/Linux)
+start: ## Start backend + frontend together (macOS/Linux)
 	bash scripts/start.sh
 
-# ── Demo tooling ─────────────────────────────────────────────────────────────
-reset-demo:                   ## Reset database to clean state (seed only, no patients)
-	cd backend && .venv/bin/python demo.py reset
+init-db: ## Create schema and remove legacy demo login accounts
+	cd backend && .venv/bin/python seed.py
 
-scenario:                     ## Run scripted patient scenario (normal speed)
-	cd backend && .venv/bin/python demo.py scenario
+create-staff: ## Provision a real NURSE or DOCTOR account
+	cd backend && .venv/bin/python create_staff.py
 
-scenario-fast:                ## Run scripted patient scenario (fast speed)
-	cd backend && .venv/bin/python demo.py scenario --speed fast
+create-bed: ## Add one real hospital bed
+	cd backend && .venv/bin/python create_bed.py
 
-# ── Tests ────────────────────────────────────────────────────────────────────
-test-backend:                 ## Run backend pytest suite
+migrate-demo-data: ## Safely migrate an older database away from unused demo resources
+	cd backend && .venv/bin/python migrate_demo_resources.py
+
+test-backend: ## Run backend pytest suite
 	cd backend && .venv/bin/pytest tests/ -v
 
-test-frontend:                ## Run frontend unit tests (vitest)
+test-frontend: ## Run frontend unit tests
 	cd frontend && npm test
 
-test-smoke:                   ## Run E2E smoke test (requires running server)
+test-smoke: ## Run E2E smoke test (requires provisioned clinical test accounts)
 	cd backend && .venv/bin/python ../tests_e2e/smoke_test.py
 
-test: test-backend test-frontend ## Run all unit tests (backend + frontend)
+test: test-backend test-frontend ## Run all unit tests
 
-# ── Build ────────────────────────────────────────────────────────────────────
-build:                        ## Build frontend production bundle
+build: ## Build frontend production bundle
 	cd frontend && npm run build
 
-# ── Help ─────────────────────────────────────────────────────────────────────
-help:                         ## Show this help message
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | \
-		awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-18s\033[0m %s\n", $$1, $$2}'
+help: ## Show this help message
+	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\\n", $$1, $$2}'

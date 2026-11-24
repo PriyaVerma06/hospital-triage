@@ -1,19 +1,12 @@
 /**
  * Login page.
  * Handles OAuth2 form login, loading state, error display,
- * and a "Demo accounts" quick-fill panel for testing.
+ * Staff-only login. Accounts are provisioned by authorized hospital IT staff.
  */
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext.jsx';
 import { Activity } from 'lucide-react';
-
-/** Demo accounts for quick fill during development */
-const DEMO_ACCOUNTS = [
-  { label: 'Nurse',  username: 'nurse1', password: 'demo123' },
-  { label: 'Doctor', username: 'dr1',    password: 'demo123' },
-  { label: 'Admin',  username: 'admin',  password: 'demo123' },
-];
 
 export default function Login() {
   const { login, user, isAuthenticated } = useAuth();
@@ -48,11 +41,6 @@ export default function Login() {
     }
   }
 
-  function fillDemo(account) {
-    setUsername(account.username);
-    setPassword(account.password);
-    setError('');
-  }
 
   return (
     <div className="min-h-screen bg-gradient-to-br from-blue-900 to-blue-700 flex items-center justify-center p-4">
@@ -83,7 +71,7 @@ export default function Login() {
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
                 className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
-                placeholder="e.g. nurse1"
+                placeholder="Hospital staff username"
                 disabled={loading}
               />
             </div>
@@ -120,24 +108,6 @@ export default function Login() {
             </button>
           </form>
 
-          {/* Demo accounts quick-fill */}
-          <div className="mt-6 pt-5 border-t border-gray-100">
-            <p className="text-xs font-medium text-gray-500 mb-2 uppercase tracking-wide">
-              Demo accounts (password: demo123)
-            </p>
-            <div className="flex gap-2 flex-wrap">
-              {DEMO_ACCOUNTS.map((acc) => (
-                <button
-                  key={acc.username}
-                  onClick={() => fillDemo(acc)}
-                  type="button"
-                  className="text-xs px-3 py-1.5 rounded-lg border border-gray-200 hover:bg-gray-50 text-gray-600 transition-colors"
-                >
-                  {acc.label} ({acc.username})
-                </button>
-              ))}
-            </div>
-          </div>
         </div>
       </div>
     </div>

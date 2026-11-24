@@ -19,7 +19,7 @@ if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
 from auth import create_access_token
-from tests.conftest import seed_test_users
+from tests.conftest import seed_test_users, TEST_PASSWORD
 from database import Base, get_db
 from main import app
 from models import (
@@ -80,7 +80,7 @@ def setup_auth_db():
     db.add_all(docs)
     db.commit()
 
-    # Seed users (admin, nurse1, nurse2, dr1..dr5)
+    # Seed isolated synthetic clinical users for this test only
     seed_test_users(db)
     db.close()
 
@@ -97,7 +97,7 @@ client = TestClient(app)
 def test_login_success_and_wrong_password():
     """Correct login returns access token and user info; incorrect credentials return 401."""
     # 1. Correct credentials for nurse1
-    resp = client.post("/auth/login", data={"username": "nurse1", "password": "demo123"})
+    resp = client.post("/auth/login", data={"username": "nurse1", "password": TEST_PASSWORD})
     assert resp.status_code == 200
     data = resp.json()
     assert "access_token" in data
@@ -112,8 +112,38 @@ def test_login_success_and_wrong_password():
     assert "Incorrect username or password" in resp_wrong_pw.json()["detail"]
 
     # 3. Non-existent user returns 401
-    resp_wrong_user = client.post("/auth/login", data={"username": "nobody", "password": "demo123"})
+    resp_wrong_user = client.post("/auth/login", data={"username": "nobody", "password": TEST_PASSWORD})
     assert resp_wrong_user.status_code == 401
+
+
+def test_admin_role_cannot_sign_in_or_use_protected_apis():
+    """Legacy ADMIN accounts are rejected even if a row still exists in the database."""
+    db = TestingSessionLocal()
+    admin = User(
+        id=99,
+        username="legacy_admin_test",
+        password_hash=__import__("auth").hash_password(TEST_PASSWORD),
+        full_name="Legacy Admin",
+        role=UserRole.ADMIN,
+        doctor_id=None,
+        is_active=True,
+    )
+    db.add(admin)
+    db.commit()
+    admin_token = create_access_token(admin)
+    db.close()
+
+    login_resp = client.post(
+        "/auth/login",
+        data={"username": "legacy_admin_test", "password": TEST_PASSWORD},
+    )
+    assert login_resp.status_code == 401
+
+    protected_resp = client.get(
+        "/patients",
+        headers={"Authorization": f"Bearer {admin_token}"},
+    )
+    assert protected_resp.status_code == 403
 
 
 def test_request_without_token_or_garbage_token():
@@ -127,59 +157,18 @@ def test_request_without_token_or_garbage_token():
     assert resp_garbage.status_code == 401
 
 
-def test_nurse_cannot_update_bed_status_admin_can(nurse_headers, admin_headers):
-    """Nurse role is denied access to bed management (403); Admin role is permitted (200)."""
-    # Nurse attempt -> 403 Forbidden
-    nurse_resp = client.put("/beds/ICU-01/status", json={"status": "CLEANING"}, headers=nurse_headers)
-    assert nurse_resp.status_code == 403
-    assert "Access forbidden" in nurse_resp.json()["detail"]
-
-    # Admin attempt -> 200 OK
-    admin_resp = client.put("/beds/ICU-01/status", json={"status": "CLEANING"}, headers=admin_headers)
-    assert admin_resp.status_code == 200
-    assert admin_resp.json()["status"] == "CLEANING"
+def test_nurse_can_update_bed_status(nurse_headers):
+    """Authorized clinical staff can update operational bed status."""
+    resp = client.put("/beds/ICU-01/status", json={"status": "CLEANING"}, headers=nurse_headers)
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "CLEANING"
 
 
-def test_user_management_rbac(nurse_headers, admin_headers):
-    """Nurse cannot create or list users (403); Admin can create, list, and activate/deactivate users."""
-    payload = {
-        "username": "nurse_new",
-        "password": "newpassword123",
-        "full_name": "New Nurse Staff",
-        "role": "NURSE",
-    }
-
-    # Nurse cannot create users
-    nurse_create = client.post("/users", json=payload, headers=nurse_headers)
-    assert nurse_create.status_code == 403
-
-    # Admin can create user
-    admin_create = client.post("/users", json=payload, headers=admin_headers)
-    assert admin_create.status_code == 201
-    created = admin_create.json()
-    assert created["username"] == "nurse_new"
-    assert created["role"] == "NURSE"
-    assert created["is_active"] is True
-    assert "password_hash" not in created
-    new_user_id = created["id"]
-
-    # Nurse cannot list users
-    assert client.get("/users", headers=nurse_headers).status_code == 403
-
-    # Admin can list users
-    list_resp = client.get("/users", headers=admin_headers)
-    assert list_resp.status_code == 200
-    assert any(u["username"] == "nurse_new" for u in list_resp.json())
-
-    # Admin can deactivate user
-    deactivate_resp = client.put(f"/users/{new_user_id}/active", json={"is_active": False}, headers=admin_headers)
-    assert deactivate_resp.status_code == 200
-    assert deactivate_resp.json()["is_active"] is False
-
-    # Deactivated user cannot log in
-    deactivated_login = client.post("/auth/login", data={"username": "nurse_new", "password": "newpassword123"})
-    assert deactivated_login.status_code == 401
-    assert "inactive" in deactivated_login.json()["detail"]
+def test_user_management_routes_are_not_exposed(nurse_headers):
+    """There are no HTTP user-management or public registration endpoints."""
+    assert client.post("/users", json={}).status_code == 404
+    assert client.get("/users", headers=nurse_headers).status_code == 404
+    assert client.post("/auth/register", json={}).status_code == 404
 
 
 def test_doctor_alerts_scoping_and_acknowledgement(doctor_headers, admin_headers):
@@ -242,10 +231,6 @@ def test_doctor_alerts_scoping_and_acknowledgement(doctor_headers, admin_headers
     assert own_ack.status_code == 200
     assert own_ack.json()["acknowledged"] is True
 
-    # Admin can acknowledge any alert
-    admin_ack = client.put(f"/alerts/{doc2_alert_id}/acknowledge", headers=admin_headers)
-    assert admin_ack.status_code == 200
-    assert admin_ack.json()["acknowledged"] is True
 
 
 def test_auth_me_profile_never_exposes_password_hash(nurse_headers):

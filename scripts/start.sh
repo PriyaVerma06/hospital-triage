@@ -31,6 +31,11 @@ PY_VERSION=$(python3 --version 2>&1 | awk '{print $2}')
 NODE_VERSION=$(node --version)
 info "Python $PY_VERSION | Node $NODE_VERSION"
 
+# ── Require JWT secret ───────────────────────────────────────────────────────
+if [ -z "${TRIAGE_SECRET_KEY:-}" ] || [ "${#TRIAGE_SECRET_KEY}" -lt 32 ]; then
+    error "Set TRIAGE_SECRET_KEY to a random value of at least 32 characters before startup."
+fi
+
 # ── Backend: virtual environment ─────────────────────────────────────────────
 if [ ! -d "$BACKEND_DIR/.venv" ]; then
     info "Creating Python virtual environment at backend/.venv …"
@@ -43,11 +48,9 @@ PIP="$BACKEND_DIR/.venv/bin/pip"
 info "Checking Python dependencies …"
 "$PIP" install -q -r "$BACKEND_DIR/requirements.txt"
 
-# ── Backend: seed database if missing ───────────────────────────────────────
-if [ ! -f "$BACKEND_DIR/triage.db" ]; then
-    info "No triage.db found – seeding initial data …"
-    (cd "$BACKEND_DIR" && "$PYTHON" seed.py)
-fi
+# ── Backend: initialize schema (no sample hospital data is inserted) ────────
+info "Initializing database schema …"
+(cd "$BACKEND_DIR" && "$PYTHON" seed.py)
 
 # ── Frontend: install node_modules if missing ────────────────────────────────
 if [ ! -d "$FRONTEND_DIR/node_modules" ]; then
@@ -65,10 +68,7 @@ echo "  Backend  →  http://127.0.0.1:8000"
 echo "  Frontend →  http://localhost:5173"
 echo "  API Docs →  http://127.0.0.1:8000/docs"
 echo ""
-echo "  Demo accounts (password: demo123):"
-echo "    admin    – full access"
-echo "    nurse1   – patient intake and queue"
-echo "    dr1–dr5  – doctor dashboard and alerts"
+echo "  Sign-in is restricted to provisioned clinical staff (NURSE / DOCTOR)."
 echo ""
 echo "  Ctrl+C to stop both services."
 echo -e "${GREEN}════════════════════════════════════════════════════════════${NC}"

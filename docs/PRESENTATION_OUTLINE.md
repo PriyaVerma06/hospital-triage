@@ -27,7 +27,7 @@
 - ML-powered urgency scoring (Level 1–5) in under 2 seconds
 - Automatic bed and doctor allocation the moment a patient is admitted
 - Live WebSocket dashboard: queue, beds, doctors, all synced instantly
-- Role-based access: nurses, doctors, and admins each see what they need
+- Role-based access: authorized nurses and doctors receive role-appropriate access
 
 **Suggested screenshot:** The live dashboard with the priority queue and bed map visible.
 
@@ -71,7 +71,7 @@
 - Priority: ICU beds for Level 1, Emergency for Level 1–2, General for Level 3–5
 - Doctors matched by specialty and current patient load (max 3/doctor)
 - Waitlist queue automatically drains when a bed or doctor becomes available
-- Discharge → bed CLEANING → admin marks AVAILABLE → top-priority patient auto-assigned
+- Discharge → bed CLEANING → authorized nurse marks AVAILABLE → top-priority patient auto-assigned
 
 **Suggested screenshot:** Bed map panel showing ICU/Emergency/General beds with colour-coded status.
 
@@ -98,7 +98,7 @@
 **Bullets:**
 - Admission alert fires for every Level 1 patient (toast + DB record)
 - Vitals update re-runs the ML model; if level worsens, escalation alert fires
-- Alerts scoped by role: doctors only see their own; nurses/admin see all
+- Alerts scoped by role: doctors only see their own; nurses see all
 - Acknowledge button clears the alert; audit trail records who acknowledged it
 
 **Suggested screenshot:** AlertToasts in the corner of the dashboard + the Alerts page list.
@@ -111,9 +111,9 @@
 
 **Bullets:**
 - OAuth2 form login → HS256 JWT (8-hour expiry, signed with TRIAGE_SECRET_KEY)
-- Three roles: NURSE, DOCTOR, ADMIN – permission matrix enforced at every endpoint
+- Three roles: NURSE and DOCTOR – permission matrix enforced at every endpoint
 - Every state change is recorded in the audit log (patient_id, event, timestamp)
-- Global audit log visible to ADMIN and DOCTOR; per-patient audit available to all roles
+- Global audit log visible to NURSE and DOCTOR; per-patient audit available to all roles
 
 **Suggested screenshot:** Admin → Activity Log tab showing a list of audit entries with timestamps.
 
