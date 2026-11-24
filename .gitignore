@@ -1,9 +1,28 @@
+# Python
 __pycache__/
 *.pyc
+*.pyo
 .venv/
 venv/
+.pytest_cache/
+
+# Database
 *.db
+*.sqlite3
+
+# Environment / secrets
 .env
+*.env.local
+
+# Node
 node_modules/
+dist/
+
+# macOS / editors
 .DS_Store
 .vscode/
+.idea/
+
+# ML artefacts (keep model.json but ignore large generated files)
+ml/model/*.pkl
+

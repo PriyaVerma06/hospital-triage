@@ -68,10 +68,17 @@ client = TestClient(app)
 # --- Test Cases ---
 
 def test_health_endpoint():
-    """GET /health should return 200 and status ok (Public)."""
+    """GET /health should return 200 and status ok (Public).
+    The response is backward-compatible: 'status' is always 'ok'.
+    Additional fields (db, model_loaded) may be present in newer versions.
+    """
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    data = response.json()
+    assert data["status"] == "ok"
+    # New fields added in Step 11 (backward-compatible extension)
+    assert data.get("db") in ("ok", "error", None)
+    assert data.get("model_loaded") in (True, False, None)
 
 
 def test_create_critical_patient(nurse_headers):

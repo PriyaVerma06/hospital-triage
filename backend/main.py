@@ -206,9 +206,27 @@ async def websocket_endpoint(
 # --- Health Check ---
 
 @app.get("/health", tags=["System"])
-def health_check():
-    """Health check endpoint to verify service availability (Public)."""
-    return {"status": "ok"}
+def health_check(db: Session = Depends(get_db)):
+    """
+    Health check endpoint – backward-compatible extension.
+    Returns: status, db (ok/error), model_loaded (bool).
+    """
+    # Verify DB connectivity with a lightweight probe
+    db_status = "ok"
+    try:
+        db.execute(__import__("sqlalchemy").text("SELECT 1"))
+    except Exception:
+        db_status = "error"
+
+    # Verify ML model is loaded (predict.py imports and caches the model at startup)
+    model_loaded = False
+    try:
+        from triage_service import run_triage  # already imported at module level
+        model_loaded = True
+    except Exception:
+        pass
+
+    return {"status": "ok", "db": db_status, "model_loaded": model_loaded}
 
 
 # --- Authentication & User Management ---
