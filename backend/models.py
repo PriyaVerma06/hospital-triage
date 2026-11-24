@@ -88,6 +88,8 @@ class Patient(Base):
     assigned_bed_id = Column(String, ForeignKey("beds.id"), nullable=True)
     assigned_doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+    assigned_at = Column(DateTime, nullable=True)    # Set on first bed+doctor assignment
+    discharged_at = Column(DateTime, nullable=True)  # Set on discharge
 
     # Relationships
     bed = relationship("Bed", back_populates="patients")
@@ -123,6 +125,7 @@ class Doctor(Base):
     patients = relationship("Patient", back_populates="doctor")
     alerts = relationship("Alert", back_populates="doctor")
     user = relationship("User", back_populates="doctor", uselist=False)
+    shifts = relationship("Shift", back_populates="doctor")
 
 
 class AuditLog(Base):
@@ -169,5 +172,33 @@ class User(Base):
 
     # Relationships
     doctor = relationship("Doctor", back_populates="user")
+    admin_logs = relationship("AdminLog", back_populates="user")
+
+
+class Shift(Base):
+    """Scheduled on-duty time block for a doctor (used by shift-apply logic)."""
+    __tablename__ = "shifts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    doctor_id = Column(Integer, ForeignKey("doctors.id"), nullable=False)
+    start_time = Column(DateTime, nullable=False)
+    end_time = Column(DateTime, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    doctor = relationship("Doctor", back_populates="shifts")
+
+
+class AdminLog(Base):
+    """Audit log for administrative actions performed by admin users."""
+    __tablename__ = "admin_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    action = Column(String, nullable=False)
+    timestamp = Column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    user = relationship("User", back_populates="admin_logs")
 
 

@@ -25,12 +25,13 @@ LAST_NAMES = ["Smith", "Johnson", "Williams", "Brown", "Jones", "Garcia", "Mille
 
 
 def reset_database():
-    """Reset database state directly: clears patients, audit logs, and resets beds/doctors. (Preserves users)."""
+    """Reset database state directly: clears patients, audit logs, and resets beds/doctors.
+    Preserves User, Shift, and AdminLog records."""
     print("=" * 60)
-    print("Resetting database to clean initial state (preserving users)...")
+    print("Resetting database to clean initial state (preserving users, shifts, admin logs)...")
     db = SessionLocal()
     try:
-        # 1. Delete all alerts, audit logs, and patient records (do NOT delete User records)
+        # 1. Delete alerts, audit logs, and patient records (preserve User, Shift, AdminLog)
         db.query(Alert).delete()
         db.query(AuditLog).delete()
         db.query(Patient).delete()

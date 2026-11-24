@@ -188,6 +188,9 @@ def assign_patient(db: Session, patient: Patient) -> Dict:
         patient.assigned_bed_id = bed.id
         patient.assigned_doctor_id = doctor.id
         patient.status = PatientStatus.ASSIGNED
+        # Set assigned_at ONLY on the first assignment (preserve original on bed moves)
+        if patient.assigned_at is None:
+            patient.assigned_at = datetime.utcnow()
 
         # Build assignment log message
         vent_str = ", ventilator" if bed.has_ventilator else ""

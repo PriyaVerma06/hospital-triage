@@ -183,6 +183,81 @@ cd backend
 .venv/bin/python simulate.py --reset -n 25
 ```
 
-- `--reset`: Resets `triage.db` (clears alerts, patients, and audit logs; preserves user accounts; resets beds and doctors to `AVAILABLE`).
+- `--reset`: Resets `triage.db` (clears alerts, patients, and audit logs; preserves User, Shift, and AdminLog records; resets beds and doctors to `AVAILABLE`).
 - `-n / --patients`: Number of patients to stream (default: 25).
 - Outputs patient admissions, real-time allocation/waitlist events, and an end-of-run resource summary.
+
+---
+
+## 8. Admin Management API (Step 7)
+
+All routes require `ADMIN` role. Prefix: `/admin`.
+
+### New Model Fields
+- **Patient**: `assigned_at` (datetime, nullable) — set on first bed+doctor assignment, never overwritten on bed moves; `discharged_at` (datetime, nullable) — set at discharge.
+- **New table: `shifts`** — `id`, `doctor_id` (FK Doctor), `start_time`, `end_time`, `created_at`.
+- **New table: `admin_logs`** — `id`, `user_id` (FK User, nullable), `action`, `timestamp`.
+
+### Bed Endpoints
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/admin/beds` | Create new bed (409 if ID exists; auto-allocates waiting patients) |
+| `PUT` | `/admin/beds/{id}` | Update ward/ventilator (409 if OCCUPIED) |
+| `DELETE` | `/admin/beds/{id}` | Delete bed (409 if OCCUPIED) |
+
+### Doctor Endpoints
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/admin/doctors` | Create new doctor (auto-allocates waiting patients) |
+| `PUT` | `/admin/doctors/{id}` | Update properties; warn (not block) if setting unavailable with active patients |
+| `DELETE` | `/admin/doctors/{id}` | Delete doctor (409 if `active_patients_count > 0`) |
+
+### Shift Endpoints
+| Method | Path | Description |
+|---|---|---|
+| `POST` | `/admin/shifts` | Schedule shift (400 if end≤start; 409 if overlap) |
+| `GET` | `/admin/shifts` | List shifts — filter by `?doctor_id=` and `?date=YYYY-MM-DD` |
+| `DELETE` | `/admin/shifts/{id}` | Delete scheduled shift |
+| `POST` | `/admin/shifts/apply` | Apply current shift coverage to doctor availability; returns change list |
+
+### Admin Logs
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/admin/logs?limit=50` | List recent admin actions, newest first |
+
+### Shift Scheduling Logic
+- Doctors **with a shift covering now** → `is_available = True`
+- Doctors **with shifts but none covering now** → `is_available = False`
+- Doctors **with no shifts defined** → availability unchanged
+- Runs automatically every 60 seconds in the background (via lifespan task).
+
+---
+
+## 9. Analytics API (Step 7)
+
+All endpoints readable by `ADMIN`, `DOCTOR`, and `NURSE`. Prefix: `/analytics`.
+All accept `?hours=N` (default 24, max 720).
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/analytics/summary` | Total patients, avg urgency, avg wait time, critical count, escalation rate |
+| `GET` | `/analytics/triage-distribution` | Patient counts by urgency level 1-5 with labels and triage colors |
+| `GET` | `/analytics/occupancy` | Live bed occupancy per ward (AVAILABLE/OCCUPIED/CLEANING), ventilator stats |
+| `GET` | `/analytics/wait-by-level` | Average wait time per urgency level |
+| `GET` | `/analytics/timeline` | Hourly arrivals and critical patient counts for the time window |
+
+---
+
+## 10. Updated Endpoints (Step 7)
+
+### `GET /patients`
+Now supports optional query params:
+- `?search=<name>` — case-insensitive name search
+- `?limit=N` — maximum results
+- `?offset=N` — pagination offset
+
+### `GET /audit`
+Global audit trail across all patients. `ADMIN` and `DOCTOR` only.
+- `?patient_id=N` — filter by patient
+- `?limit=50` / `?offset=0` — pagination
+

@@ -3,9 +3,11 @@ Seed script to populate initial beds, on-duty doctors, and RBAC users in triage.
 Idempotent: clears existing Bed, Doctor, and User records so it can be safely re-run.
 """
 
+from datetime import datetime, timedelta
+
 from auth import hash_password
 from database import Base, SessionLocal, engine
-from models import Alert, Bed, BedStatus, BedWard, Doctor, DoctorSpecialty, User, UserRole
+from models import Alert, Bed, BedStatus, BedWard, Doctor, DoctorSpecialty, Shift, User, UserRole
 
 
 def seed():
@@ -18,6 +20,7 @@ def seed():
         # Clear users and alerts first to respect foreign keys
         db.query(Alert).delete()
         db.query(User).delete()
+        db.query(Shift).delete()
         db.query(Bed).delete()
         db.query(Doctor).delete()
         db.commit()
@@ -86,11 +89,22 @@ def seed():
         db.add_all(users)
         db.commit()
 
+        # 4. Seed one full-day shift per doctor (today UTC 00:00 -> tomorrow 00:00)
+        today = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+        tomorrow = today + timedelta(days=1)
+        shifts = [
+            Shift(doctor_id=doc.id, start_time=today, end_time=tomorrow)
+            for doc in doctors
+        ]
+        db.add_all(shifts)
+        db.commit()
+
         print(f"Seeded {len(beds)} beds and {len(doctors)} doctors successfully.")
         print(f"Seeded {len(users)} user accounts (password: 'demo123'):")
         for u in users:
             doc_str = f" [Linked to Doctor #{u.doctor_id}]" if u.doctor_id else ""
             print(f"  - {u.username:<8} ({u.role.value:<6}) : {u.full_name}{doc_str}")
+        print(f"Seeded {len(shifts)} shifts (today 00:00 UTC → tomorrow 00:00 UTC).")
 
     finally:
         db.close()

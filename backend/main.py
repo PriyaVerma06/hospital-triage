@@ -62,7 +62,7 @@ from auth import (
     require_roles,
     verify_password,
 )
-from database import Base, engine, get_db
+from database import Base, engine, get_db, SessionLocal
 from models import (
     Alert,
     AuditLog,
@@ -72,6 +72,7 @@ from models import (
     Doctor,
     Patient,
     PatientStatus,
+    Shift,
     User,
     UserRole,
 )
@@ -103,10 +104,40 @@ from triage_service import run_triage
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan context: capture running event loop and initialize DB schema."""
+    """Application lifespan context: capture running event loop, initialize DB, start background tasks."""
     set_event_loop(asyncio.get_running_loop())
     Base.metadata.create_all(bind=engine)
+
+    # Background task: apply shift availability every 60 seconds
+    async def _apply_shifts_periodically():
+        from allocation import allocate_waiting as _alloc_waiting
+        from models import Shift, Doctor as _Doctor
+        while True:
+            await asyncio.sleep(60)
+            try:
+                db = SessionLocal()
+                now = datetime.utcnow()
+                for doctor in db.query(_Doctor).all():
+                    covering = db.query(Shift).filter(
+                        Shift.doctor_id == doctor.id,
+                        Shift.start_time <= now,
+                        Shift.end_time > now,
+                    ).first()
+                    has_any = db.query(Shift).filter(Shift.doctor_id == doctor.id).first()
+                    if has_any is None:
+                        continue  # No shifts defined – don't touch availability
+                    new_avail = covering is not None
+                    if doctor.is_available != new_avail:
+                        doctor.is_available = new_avail
+                db.commit()
+                _alloc_waiting(db)
+                db.close()
+            except Exception:
+                pass  # Never crash the app on background errors
+
+    _shift_task = asyncio.create_task(_apply_shifts_periodically())
     yield
+    _shift_task.cancel()
 
 
 app = FastAPI(
@@ -406,18 +437,31 @@ def create_patient(
 )
 def list_patients(
     status: Optional[PatientStatus] = Query(None, description="Filter patients by status"),
+    search: Optional[str] = Query(None, description="Case-insensitive search on patient name"),
+    limit: Optional[int] = Query(None, ge=1, le=1000, description="Maximum number of results"),
+    offset: Optional[int] = Query(None, ge=0, description="Number of results to skip"),
     current_user: User = Depends(require_roles(UserRole.NURSE, UserRole.DOCTOR, UserRole.ADMIN)),
     db: Session = Depends(get_db),
 ):
     """
     List patients sorted by urgency_level ascending (1 first),
     then created_at ascending (longest wait first).
+    Optionally filter by status, search by name, and paginate with limit/offset.
     """
     query = db.query(Patient)
     if status is not None:
         query = query.filter(Patient.status == status)
+    if search:
+        query = query.filter(Patient.name.ilike(f"%{search}%"))
 
-    return query.order_by(Patient.urgency_level.asc(), Patient.created_at.asc()).all()
+    query = query.order_by(Patient.urgency_level.asc(), Patient.created_at.asc())
+
+    if offset is not None:
+        query = query.offset(offset)
+    if limit is not None:
+        query = query.limit(limit)
+
+    return query.all()
 
 
 @app.get(
@@ -546,6 +590,7 @@ def discharge_patient(
 
     discharged_bed_id = patient.assigned_bed_id
     patient.status = PatientStatus.DISCHARGED
+    patient.discharged_at = datetime.utcnow()  # Step 7: record discharge timestamp
     db.add(AuditLog(patient_id=patient.id, event="Patient discharged", timestamp=datetime.utcnow()))
     db.commit()
 
@@ -887,3 +932,42 @@ def run_manual_allocation(
         assigned_patient_ids=assigned_ids,
         count=len(assigned_ids),
     )
+
+
+# --- Global Audit Endpoint (Step 7) ---
+
+@app.get(
+    "/audit",
+    response_model=List[AuditLogOut],
+    tags=["Audit"],
+)
+def get_global_audit_log(
+    patient_id: Optional[int] = Query(None, description="Filter by patient ID"),
+    limit: int = Query(50, ge=1, le=1000, description="Max entries to return"),
+    offset: int = Query(0, ge=0, description="Number of entries to skip"),
+    current_user: User = Depends(require_roles(UserRole.ADMIN, UserRole.DOCTOR)),
+    db: Session = Depends(get_db),
+):
+    """
+    Retrieve the global audit trail across all patients, newest entries first.
+    Optionally filter by patient_id. Paginated via limit/offset.
+    ADMIN and DOCTOR only.
+    """
+    query = db.query(AuditLog)
+    if patient_id is not None:
+        query = query.filter(AuditLog.patient_id == patient_id)
+    return (
+        query.order_by(AuditLog.timestamp.desc(), AuditLog.id.desc())
+        .offset(offset)
+        .limit(limit)
+        .all()
+    )
+
+
+# --- Step 7: Include Admin & Analytics Routers ---
+from admin_routes import router as admin_router  # noqa: E402
+from analytics import router as analytics_router  # noqa: E402
+
+app.include_router(admin_router)
+app.include_router(analytics_router)
+
